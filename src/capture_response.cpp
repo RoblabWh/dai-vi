@@ -108,7 +108,7 @@ int main(int argc, char **argv)
     cancel = true; });
 
   // Let it run
-  for (uint32_t exposure = exposure_start; exposure <= exposure_stop; exposure += exposure_step)
+  for (uint32_t exposure = exposure_start; exposure <= exposure_stop && !cancel; exposure += exposure_step)
   {
     spdlog::info("exposure: {}us", exposure, 100);
 
@@ -116,7 +116,7 @@ int main(int argc, char **argv)
     control.setManualExposure(exposure, 100);
     queue_in->send(control);
 
-    for (uint32_t sample = 0; sample < samples; ++sample)
+    for (uint32_t sample = 0; sample < samples && !cancel; ++sample)
     {
       write_jpeg_with_exposure(std::dynamic_pointer_cast<dai::MessageGroup>(sensor->queue_cam->get()));
     }
