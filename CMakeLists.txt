@@ -24,10 +24,16 @@ find_package(spdlog REQUIRED)
 add_library(dai_vi STATIC src/dai_vi.cpp)
 target_include_directories(dai_vi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(dai_vi PUBLIC depthai::core PRIVATE spdlog::spdlog)
-set_target_properties(dai_vi PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+set_target_properties(dai_vi PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED YES
+  POSITION_INDEPENDENT_CODE ON
+)
 
 option(BUILD_EXEC "Build executables for capturing and viewing" ON)
 if(${BUILD_EXEC})
+  message(STATUS "Building executables")
+
   find_package(OpenCV QUIET COMPONENTS highgui)
 
   include(FetchContent)
