@@ -12,7 +12,7 @@ namespace dai_vi
     ~SensorWrapper();
 
     std::shared_ptr<dai::node::IMU> createIMU(uint16_t hz);
-    std::shared_ptr<dai::node::MonoCamera> createCamera(const std::string &name, dai::CameraBoardSocket socket);
+    std::shared_ptr<dai::node::MonoCamera> createCamera(const std::string &name, dai::CameraBoardSocket socket, uint16_t hz = 0);
     bool buildPipeline();
     bool createDevice();
 
@@ -47,7 +47,7 @@ namespace dai_vi
     void proc_imu(std::shared_ptr<dai::IMUData> msg);
 
 #ifdef CHECK_MSGDROP
-    const double pd_thresh = 1.5;
+    static constexpr const double pd_thresh = 1.5;
 
     std::chrono::duration<double> cam_pd;
     std::chrono::duration<double> imu_pd;
@@ -56,7 +56,7 @@ namespace dai_vi
     std::chrono::nanoseconds imu_pd_limit;
 
 #ifdef CHECK_MSGDROP_DETAILED
-    const uint64_t pi_thresh = 10;
+    static const uint64_t pi_thresh = 10;
 
     uint64_t cam_pi;
     uint64_t imu_pi;

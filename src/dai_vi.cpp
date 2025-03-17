@@ -27,7 +27,7 @@ namespace dai_vi
     spdlog::trace("Destructor: END");
   }
 
-  std::shared_ptr<dai::node::MonoCamera> SensorWrapper::createCamera(const std::string &name, dai::CameraBoardSocket socket)
+  std::shared_ptr<dai::node::MonoCamera> SensorWrapper::createCamera(const std::string &name, dai::CameraBoardSocket socket, uint16_t hz)
   {
     spdlog::trace("createCamera: START");
     std::shared_ptr<dai::node::MonoCamera> cam;
@@ -36,6 +36,8 @@ namespace dai_vi
       cam = pipeline.create<dai::node::MonoCamera>();
       cam->setBoardSocket(socket);
       node_cam[name] = cam;
+      if (hz > 0)
+        cam_hz = hz;
     }
     spdlog::trace("createCamera: END");
     return cam;
@@ -69,8 +71,8 @@ namespace dai_vi
     if (node_imu)
     {
       node_imu->enableIMUSensor({dai::IMUSensor::GYROSCOPE_RAW, dai::IMUSensor::ACCELEROMETER_RAW}, imu_hz);
-      node_imu->setBatchReportThreshold(cam_hz / 4);
-      node_imu->setMaxBatchReports(cam_hz);
+      node_imu->setBatchReportThreshold(1);
+      node_imu->setMaxBatchReports(imu_hz / 10);
       node_link_imu = pipeline.create<dai::node::XLinkOut>();
       node_link_imu->setStreamName("imu");
       node_imu->out.link(node_link_imu->input);
@@ -214,8 +216,8 @@ namespace dai_vi
         spdlog::debug("Got {} msgs without problems", cam_pi);
         counter = 0;
       }
-#endif
       spdlog::trace("All good (with {}ms)", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff).count() * 1e3);
+#endif
     }
 #endif
 
@@ -263,8 +265,8 @@ namespace dai_vi
           spdlog::debug("IMU got {} msgs without problems", imu_pi);
           counter = 0;
         }
-#endif
         spdlog::trace("All good (with {})", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff).count());
+#endif
       }
 #endif
     }
