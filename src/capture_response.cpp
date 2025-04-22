@@ -6,6 +6,7 @@
 #include "dai_vi.hpp"
 #include "dai_io.hpp"
 
+const uint8_t INTERNAL_DELAY = 8;
 bool cancel = false;
 std::unique_ptr<dai_vi::SensorWrapper> sensor;
 
@@ -36,7 +37,7 @@ int main(int argc, char **argv)
       .scan<'u', uint32_t>();
   prog.add_argument("--samples")
       .help("Number of samples to capture per exposure")
-      .default_value<uint32_t>(1)
+      .default_value<uint32_t>(2)
       .scan<'u', uint32_t>();
 
   try
@@ -72,6 +73,8 @@ int main(int argc, char **argv)
   sensor->cam_hz = cam_hz;
   sensor->encode = true;
   sensor->start_skip = 0;
+  sensor->fn_proc_synced = [](std::shared_ptr<dai::MessageGroup> msgpack) -> void
+  { (void)msgpack; };
 
   if (!sensor->buildPipeline())
   {
@@ -108,18 +111,31 @@ int main(int argc, char **argv)
     cancel = true; });
 
   // Let it run
+  uint8_t start_skip = INTERNAL_DELAY;
   for (uint32_t exposure = exposure_start; exposure <= exposure_stop && !cancel; exposure += exposure_step)
   {
-    spdlog::info("exposure: {}us", exposure, 100);
-
     dai::CameraControl control;
     control.setManualExposure(exposure, 100);
     queue_in->send(control);
 
     for (uint32_t sample = 0; sample < samples && !cancel; ++sample)
     {
-      write_jpeg_with_exposure(std::dynamic_pointer_cast<dai::MessageGroup>(sensor->queue_cam->get()));
+      if (start_skip > 0)
+      {
+        sensor->queue_cam->get();
+        --start_skip;
+      }
+      else
+      {
+        write_jpeg_with_exposure(std::dynamic_pointer_cast<dai::MessageGroup>(sensor->queue_cam->get()));
+      }
     }
+
+    spdlog::info("exposure: {}us", exposure);
+  }
+  for (uint16_t i = 0; i < INTERNAL_DELAY && !cancel; ++i)
+  {
+    write_jpeg_with_exposure(std::dynamic_pointer_cast<dai::MessageGroup>(sensor->queue_cam->get()));
   }
   sensor->stop();
   close_output_files();

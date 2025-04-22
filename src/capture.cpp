@@ -65,7 +65,7 @@ int main(int argc, char **argv)
     sensor->cam_hz = cam_hz;
     sensor->encode = true;
     if (exposure > 0)
-      sensor->start_skip = 0;
+      sensor->start_skip = 1;
   }
 
   if (!sensor->buildPipeline())

@@ -135,7 +135,7 @@ namespace dai_vi
   bool SensorWrapper::createDevice()
   {
     spdlog::trace("createDevice: START");
-    device = std::make_unique<dai::Device>(devconf, dai::UsbSpeed::SUPER_PLUS);
+    device = std::make_unique<dai::Device>(devconf);
     if (device->getConnectedIMU() != "BMI270")
     {
       spdlog::error("Only IMU of type BMI270");
@@ -233,6 +233,12 @@ namespace dai_vi
 
   void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg)
   {
+    if (start_skip > 0)
+    {
+      spdlog::trace("proc_imu: START SKIP");
+      return;
+    }
+
     spdlog::trace("proc_imu: START");
 #ifdef CHECK_MSGDROP
     static auto last_tp = msg->packets.front().gyroscope.getTimestamp();

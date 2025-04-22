@@ -34,7 +34,7 @@ namespace dai_vi
     std::shared_ptr<dai::node::XLinkOut> node_link_imu;
     std::shared_ptr<dai::DataOutputQueue> queue_imu;
 
-    std::function<void(std::shared_ptr<dai::MessageGroup> msgpack)> fn_proc_synced;
+    std::function<void(std::shared_ptr<dai::MessageGroup>)> fn_proc_synced;
     std::function<void(const dai::IMUPacket &)> fn_proc_imu;
 
     bool encode = false;
