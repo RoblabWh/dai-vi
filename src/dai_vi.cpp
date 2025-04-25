@@ -1,35 +1,38 @@
 #include "dai_vi.hpp"
 #include "spdlog/spdlog.h"
 #include "spdlog/cfg/env.h"
+#include "spdlog/sinks/stdout_color_sinks.h"
 
 namespace dai_vi
 {
+  auto logger = spdlog::stdout_color_mt("dai_vi");
+
   SensorWrapper::SensorWrapper()
   {
 #ifndef NDEBUG
     spdlog::set_level(spdlog::level::debug);
 #endif
     spdlog::cfg::load_env_levels();
-    spdlog::trace("Constructor: START");
+    logger->trace("Constructor: START");
     // Sync both camera lanes
     devconf.board.gpio[6] = dai::BoardConfig::GPIO(dai::BoardConfig::GPIO::OUTPUT, dai::BoardConfig::GPIO::Level::HIGH);
 #ifndef NDEBUG
     devconf.logLevel = dai::LogLevel::DEBUG;
     devconf.outputLogLevel = dai::LogLevel::DEBUG;
 #endif
-    spdlog::trace("Constructor: END");
+    logger->trace("Constructor: END");
   }
 
   SensorWrapper::~SensorWrapper()
   {
-    spdlog::trace("Destructor: START");
+    logger->trace("Destructor: START");
     stop();
-    spdlog::trace("Destructor: END");
+    logger->trace("Destructor: END");
   }
 
   std::shared_ptr<dai::node::MonoCamera> SensorWrapper::createCamera(const std::string &name, dai::CameraBoardSocket socket, uint16_t hz)
   {
-    spdlog::trace("createCamera: START");
+    logger->trace("createCamera: START");
     std::shared_ptr<dai::node::MonoCamera> cam;
     if (node_cam.find(name) == node_cam.end())
     {
@@ -39,22 +42,22 @@ namespace dai_vi
       if (hz > 0)
         cam_hz = hz;
     }
-    spdlog::trace("createCamera: END");
+    logger->trace("createCamera: END");
     return cam;
   }
 
   std::shared_ptr<dai::node::IMU> SensorWrapper::createIMU(uint16_t hz)
   {
-    spdlog::trace("createIMU: START");
+    logger->trace("createIMU: START");
     node_imu = pipeline.create<dai::node::IMU>();
     imu_hz = hz;
-    spdlog::trace("createIMU: END");
+    logger->trace("createIMU: END");
     return node_imu;
   }
 
   bool SensorWrapper::buildPipeline()
   {
-    spdlog::trace("buildPipeline: START");
+    logger->trace("buildPipeline: START");
 #ifdef CHECK_MSGDROP
     cam_pd = std::chrono::duration<double>(1. / cam_hz);
     imu_pd = std::chrono::duration<double>(1. / imu_hz);
@@ -82,7 +85,7 @@ namespace dai_vi
     {
       if (cam_hz == 0)
       {
-        spdlog::error("Camera Hz is unset");
+        logger->error("Camera Hz is unset");
         return false;
       }
 
@@ -128,26 +131,26 @@ namespace dai_vi
       }
       node_cam.begin()->second->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::OUTPUT);
     }
-    spdlog::trace("buildPipeline: END");
+    logger->trace("buildPipeline: END");
     return true;
   }
 
   bool SensorWrapper::createDevice()
   {
-    spdlog::trace("createDevice: START");
+    logger->trace("createDevice: START");
     device = std::make_unique<dai::Device>(devconf);
     if (device->getConnectedIMU() != "BMI270")
     {
-      spdlog::error("Only IMU of type BMI270");
+      logger->error("Only IMU of type BMI270");
       return false;
     }
-    spdlog::trace("createDevice: END");
+    logger->trace("createDevice: END");
     return true;
   }
 
   bool SensorWrapper::start()
   {
-    spdlog::trace("start: START");
+    logger->trace("start: START");
     bool valid = false;
     device->startPipeline(pipeline);
     if (!node_cam.empty())
@@ -156,7 +159,7 @@ namespace dai_vi
       queue_cam->addCallback([this](std::shared_ptr<dai::ADatatype> data)
                              { proc_synced(std::dynamic_pointer_cast<dai::MessageGroup>(data)); });
       if (!fn_proc_synced)
-        spdlog::warn("Starting cameras without function to process the data!");
+        logger->warn("Starting cameras without function to process the data!");
       valid = true;
     }
     if (node_imu)
@@ -165,35 +168,35 @@ namespace dai_vi
       queue_imu->addCallback([this](std::shared_ptr<dai::ADatatype> data)
                              { proc_imu(std::dynamic_pointer_cast<dai::IMUData>(data)); });
       if (!fn_proc_imu)
-        spdlog::warn("Starting imu without function to process the data!");
+        logger->warn("Starting imu without function to process the data!");
       valid = true;
     }
-    spdlog::trace("start: END");
+    logger->trace("start: END");
     return valid;
   }
 
   void SensorWrapper::stop()
   {
-    spdlog::trace("stop: START");
+    logger->trace("stop: START");
     device.reset();
-    spdlog::trace("stop: END");
+    logger->trace("stop: END");
   }
 
   void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack)
   {
     if (start_skip > 0)
     {
-      spdlog::trace("proc_synced: START SKIP");
+      logger->trace("proc_synced: START SKIP");
       start_skip--;
       return;
     }
     else if (start_skip == 0)
     {
       start_skip--;
-      spdlog::info("Image processing started");
+      logger->info("Image processing started");
     }
 
-    spdlog::trace("proc_synced: START");
+    logger->trace("proc_synced: START");
 #ifdef CHECK_MSGDROP
 #ifdef CHECK_MSGDROP_DETAILED
     static uint64_t counter = 0;
@@ -204,7 +207,7 @@ namespace dai_vi
     last_tp = tp;
     if (time_diff > cam_pd_limit)
     {
-      spdlog::warn("Messages Dropped!! (by {}ms)", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff - cam_pd).count() * 1e3);
+      logger->warn("Messages Dropped!! (by {}ms)", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff - cam_pd).count() * 1e3);
 #ifdef CHECK_MSGDROP_DETAILED
       counter = 0;
     }
@@ -213,33 +216,33 @@ namespace dai_vi
       ++counter;
       if (counter == cam_pi)
       {
-        spdlog::debug("Got {} msgs without problems", cam_pi);
+        logger->debug("Got {} msgs without problems", cam_pi);
         counter = 0;
       }
-      spdlog::trace("All good (with {}ms)", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff).count() * 1e3);
+      logger->trace("All good (with {}ms)", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff).count() * 1e3);
 #endif
     }
 #endif
 
 #ifndef NDEBUG
-    spdlog::trace("sync diff: {}ms", msgpack->getIntervalNs() * 1e-6);
+    logger->trace("sync diff: {}ms", msgpack->getIntervalNs() * 1e-6);
 #endif
 
     if (fn_proc_synced)
       fn_proc_synced(msgpack);
 
-    spdlog::trace("proc_synced: END");
+    logger->trace("proc_synced: END");
   }
 
   void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg)
   {
     if (start_skip > 0)
     {
-      spdlog::trace("proc_imu: START SKIP");
+      logger->trace("proc_imu: START SKIP");
       return;
     }
 
-    spdlog::trace("proc_imu: START");
+    logger->trace("proc_imu: START");
 #ifdef CHECK_MSGDROP
     static auto last_tp = msg->packets.front().gyroscope.getTimestamp();
 #ifdef CHECK_MSGDROP_DETAILED
@@ -259,7 +262,7 @@ namespace dai_vi
       last_tp = tp;
       if (time_diff > imu_pd_limit)
       {
-        spdlog::warn("IMU Messages Dropped!! (by {})", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff - imu_pd).count());
+        logger->warn("IMU Messages Dropped!! (by {})", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff - imu_pd).count());
 #ifdef CHECK_MSGDROP_DETAILED
         counter = 0;
       }
@@ -268,15 +271,15 @@ namespace dai_vi
         ++counter;
         if (counter == imu_pi)
         {
-          spdlog::debug("IMU got {} msgs without problems", imu_pi);
+          logger->debug("IMU got {} msgs without problems", imu_pi);
           counter = 0;
         }
-        spdlog::trace("All good (with {})", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff).count());
+        logger->trace("All good (with {})", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff).count());
 #endif
       }
 #endif
     }
-    spdlog::trace("proc_imu: END");
+    logger->trace("proc_imu: END");
   }
 
 }

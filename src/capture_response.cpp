@@ -1,5 +1,6 @@
 #include "spdlog/spdlog.h"
 #include "spdlog/cfg/env.h"
+#include "spdlog/sinks/stdout_color_sinks.h"
 #include "argparse/argparse.hpp"
 #include <signal.h>
 
@@ -7,6 +8,8 @@
 #include "dai_io.hpp"
 
 const uint8_t INTERNAL_DELAY = 8;
+
+auto logger = spdlog::stdout_color_mt("dai_vi_capture_response");
 bool cancel = false;
 std::unique_ptr<dai_vi::SensorWrapper> sensor;
 
@@ -46,7 +49,7 @@ int main(int argc, char **argv)
   }
   catch (const std::exception &e)
   {
-    spdlog::error(e.what());
+    logger->error(e.what());
     std::cout << prog << std::endl;
     return 1;
   }
@@ -78,26 +81,26 @@ int main(int argc, char **argv)
 
   if (!sensor->buildPipeline())
   {
-    spdlog::error("Failed to build pipeline!");
+    logger->error("Failed to build pipeline!");
     return 1;
   }
   if (!sensor->createDevice())
   {
-    spdlog::error("Failed to create device!");
+    logger->error("Failed to create device!");
     return 1;
   }
 
   // Setup Output Files
   if (!setup_output_folder(sensor, prog.get<std::string>("output"), prog.get<bool>("--force")))
   {
-    spdlog::error("Failed to create output folder!");
+    logger->error("Failed to create output folder!");
     return 1;
   }
 
   // Start DepthAi Pipeline
   if (!sensor->start())
   {
-    spdlog::error("Failed to start sensor!");
+    logger->error("Failed to start sensor!");
     return 1;
   }
   sensor->queue_cam->setMaxSize(1);
@@ -107,7 +110,7 @@ int main(int argc, char **argv)
   signal(SIGINT, [](int signum)
          {
     (void) signum;
-    spdlog::info("signal: SIGINT");
+    logger->info("signal: SIGINT");
     cancel = true; });
 
   // Let it run
@@ -131,7 +134,7 @@ int main(int argc, char **argv)
       }
     }
 
-    spdlog::info("exposure: {}us", exposure);
+    logger->info("exposure: {}us", exposure);
   }
   for (uint16_t i = 0; i < INTERNAL_DELAY && !cancel; ++i)
   {

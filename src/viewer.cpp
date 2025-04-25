@@ -1,5 +1,6 @@
 #include "spdlog/spdlog.h"
 #include "spdlog/cfg/env.h"
+#include "spdlog/sinks/stdout_color_sinks.h"
 #include "argparse/argparse.hpp"
 #include <signal.h>
 #include <future>
@@ -7,6 +8,7 @@
 
 #include "dai_vi.hpp"
 
+auto logger = spdlog::stdout_color_mt("dai_vi_viewer");
 std::promise<void> exit_barrier;
 std::unique_ptr<dai_vi::SensorWrapper> sensor;
 
@@ -45,7 +47,7 @@ int main(int argc, char **argv)
   }
   catch (const std::exception &e)
   {
-    spdlog::error(e.what());
+    logger->error(e.what());
     std::cout << prog << std::endl;
     return 1;
   }
@@ -69,12 +71,12 @@ int main(int argc, char **argv)
 
   if (!sensor->buildPipeline())
   {
-    spdlog::error("Failed to build pipeline!");
+    logger->error("Failed to build pipeline!");
     return 1;
   }
   if (!sensor->createDevice())
   {
-    spdlog::error("Failed to create device!");
+    logger->error("Failed to create device!");
     return 1;
   }
 
@@ -89,14 +91,14 @@ int main(int argc, char **argv)
   // Start DepthAi Pipeline
   if (!sensor->start())
   {
-    spdlog::error("Failed to start sensor!");
+    logger->error("Failed to start sensor!");
     return 1;
   }
 
   signal(SIGINT, [](int signum)
          {
     (void) signum;
-    spdlog::info("signal: SIGINT");
+    logger->info("signal: SIGINT");
     sensor->stop();
     exit_barrier.set_value(); });
 

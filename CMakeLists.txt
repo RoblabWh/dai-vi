@@ -2,15 +2,14 @@ cmake_minimum_required(VERSION 3.5)
 project(dai_vi LANGUAGES CXX)
 
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
-  add_compile_options(-O3 -march=native -Wall -Wextra -Wpedantic)
+  add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
 find_package(depthai 2.29 CONFIG REQUIRED)
-find_package(spdlog REQUIRED)
 
 add_library(dai_vi STATIC src/dai_vi.cpp)
 target_include_directories(dai_vi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(dai_vi PUBLIC depthai::core PRIVATE spdlog::spdlog)
+target_link_libraries(dai_vi PUBLIC depthai::core)
 set_target_properties(dai_vi PROPERTIES
   CXX_STANDARD 17
   CXX_STANDARD_REQUIRED YES
@@ -44,15 +43,15 @@ if(${BUILD_EXEC})
   FetchContent_MakeAvailable(argparse)
 
   add_executable(capture src/capture.cpp)
-  target_link_libraries(capture PRIVATE dai_vi spdlog::spdlog argparse)
+  target_link_libraries(capture PRIVATE dai_vi argparse)
 
   add_executable(capture_response src/capture_response.cpp)
-  target_link_libraries(capture_response PRIVATE dai_vi spdlog::spdlog argparse)
+  target_link_libraries(capture_response PRIVATE dai_vi argparse)
 
-  if(NOT ${OpenCV_FOUND})
-    message("Skipped building Viewer, OpenCV is missing!")
+  if(NOT ${OpenCV_FOUND} OR NOT TARGET depthai::opencv)
+    message("Skipped building Viewer, OpenCV support is missing!")
   else()
     add_executable(viewer src/viewer.cpp)
-    target_link_libraries(viewer PRIVATE dai_vi depthai::opencv opencv_highgui spdlog::spdlog argparse)
+    target_link_libraries(viewer PRIVATE dai_vi depthai::opencv opencv_highgui argparse)
   endif()
 endif()
