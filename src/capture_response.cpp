@@ -134,7 +134,7 @@ int main(int argc, char **argv)
       }
     }
 
-    logger->info("exposure: {}us", exposure);
+    logger->info("exposure: {}us/{}us - {:3.2f}%", exposure, exposure_stop, exposure * 100.0 / exposure_stop);
   }
   for (uint16_t i = 0; i < INTERNAL_DELAY && !cancel; ++i)
   {
