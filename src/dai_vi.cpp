@@ -1,285 +1,395 @@
 #include "dai_vi.hpp"
-#include "spdlog/spdlog.h"
+#include "device_scripts.hpp"
+
+#include <chrono>
+#include <cstdint>
+#include <future>
+#include <memory>
+#include <optional>
+#include <ratio>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "depthai/depthai.hpp"
 #include "spdlog/cfg/env.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 
-namespace dai_vi
-{
-  auto logger = spdlog::stdout_color_mt("dai_vi");
 
-  SensorWrapper::SensorWrapper()
-  {
-#ifndef NDEBUG
-    spdlog::set_level(spdlog::level::debug);
-#endif
-    spdlog::cfg::load_env_levels();
-    logger->trace("Constructor: START");
-    // Sync both camera lanes
-    devconf.board.gpio[6] = dai::BoardConfig::GPIO(dai::BoardConfig::GPIO::OUTPUT, dai::BoardConfig::GPIO::Level::HIGH);
-#ifndef NDEBUG
-    devconf.logLevel = dai::LogLevel::DEBUG;
-    devconf.outputLogLevel = dai::LogLevel::DEBUG;
-#endif
-    logger->trace("Constructor: END");
-  }
+namespace dai_vi {
+auto logger = spdlog::stdout_color_mt("dai_vi");
 
-  SensorWrapper::~SensorWrapper()
-  {
-    logger->trace("Destructor: START");
-    stop();
-    logger->trace("Destructor: END");
-  }
+struct CameraConfig {
+  dai::CameraBoardSocket socket;
+  std::optional<std::pair<uint32_t, uint32_t>> resolution;
+  std::optional<float> hz;
+  std::optional<std::chrono::microseconds> exposure;
+  std::optional<uint32_t> iso;
+  bool color;
+  bool encode;
+};
 
-  std::shared_ptr<dai::node::MonoCamera> SensorWrapper::createCamera(const std::string &name, dai::CameraBoardSocket socket, uint16_t hz)
-  {
-    logger->trace("createCamera: START");
-    std::shared_ptr<dai::node::MonoCamera> cam;
-    if (node_cam.find(name) == node_cam.end())
-    {
-      cam = pipeline.create<dai::node::MonoCamera>();
-      cam->setBoardSocket(socket);
-      node_cam[name] = cam;
-      if (hz > 0)
-        cam_hz = hz;
+std::optional<int> detect_board_revision(const std::unique_ptr<dai::Device> &dev) {
+  try {
+    // Parse board revision to determine GPIO pinout
+    const auto dev_data = dev->readCalibration2().getEepromData();
+    logger->debug("Product name: {}, Board name: {}, Board revision: {}", dev_data.productName, dev_data.boardName, dev_data.boardRev);
+    if (dev_data.productName != "OAK-FFC-4P" || dev_data.boardName != "DD2090") {
+      throw std::runtime_error("Unsupported product/board");
     }
-    logger->trace("createCamera: END");
-    return cam;
-  }
+    if (dev_data.boardRev.length() < 2 || dev_data.boardRev[0] != 'R') {
+      throw std::runtime_error("Failed to parse revision number");
+    }
+    const auto board_revision = std::stoi(dev_data.boardRev.substr(1, 2));
+    logger->debug("Parsed board revision: {}", board_revision);
 
-  std::shared_ptr<dai::node::IMU> SensorWrapper::createIMU(uint16_t hz)
-  {
-    logger->trace("createIMU: START");
-    node_imu = pipeline.create<dai::node::IMU>();
+    return board_revision;
+  } catch (const std::runtime_error &e) {
+    logger->warn("Failed to detect board revision: {}", e.what());
+    return std::nullopt;
+  }
+}
+
+SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id, dai::LogLevel dai_log_level) {
+  spdlog::cfg::load_env_levels();
+  logger->trace("Constructor: START");
+
+  // Detect board and revision
+  std::string dev_id;
+  std::unique_ptr<dai::Device> dev;
+  if (device_id) {
+    dev = std::make_unique<dai::Device>(*device_id, dai::UsbSpeed::HIGH);
+  } else {
+    dev = std::make_unique<dai::Device>(dai::UsbSpeed::HIGH);
+  }
+  dev_id = dev->getDeviceId();
+  board_revision = detect_board_revision(dev);
+  logger->info("Connected to device with id: {}", dev_id);
+  dev.reset();
+
+  // Wait for device to come up again
+  bool dev_rdy = false;
+  dai::DeviceInfo dev_info;
+  for (uint8_t i = 0; !dev_rdy && i < 10; ++i) {
+    std::tie(dev_rdy, dev_info) = dai::Device::getDeviceById(dev_id);
+  }
+  dev_info.deviceId = dev_id;
+
+  // Configure device and pipeline
+  dai::DeviceBase::Config dev_cfg;
+  dev_cfg.logLevel = dai_log_level;
+  dev_cfg.outputLogLevel = dai_log_level;
+  if (board_revision && *board_revision < 7) {
+    // Connect FSIN_2LANE and FSIN_4LANE on older revisions
+    const auto fsin_mode_select = *board_revision < 6 ? 6 : 38;
+    dev_cfg.board.gpio[fsin_mode_select] = dai::BoardConfig::GPIO(dai::BoardConfig::GPIO::OUTPUT, dai::BoardConfig::GPIO::Level::HIGH);
+  }
+  pipeline = std::make_unique<dai::Pipeline>(std::make_shared<dai::Device>(dev_cfg, dev_info, dai::UsbSpeed::SUPER_PLUS));
+  pipeline->setXLinkChunkSize(0);
+
+  logger->trace("Constructor: END");
+}
+
+SensorWrapper::~SensorWrapper() {
+  logger->trace("Destructor: START");
+  stop();
+  logger->trace("Destructor: END");
+}
+
+bool SensorWrapper::addCamera(
+    const std::string &name, dai::CameraBoardSocket socket,
+    std::optional<std::pair<uint32_t, uint32_t>> resolution,
+    std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
+    std::optional<uint32_t> iso, bool color, bool encode) {
+  logger->trace("addCamera: START");
+  const bool is_new = cams.find(name) == cams.end();
+  if (is_new) {
+    cams[name] = {socket, resolution, hz, exposure, iso, color, encode};
+  }
+  logger->trace("addCamera: END");
+  return is_new;
+}
+bool SensorWrapper::addCamera(
+    dai::CameraBoardSocket socket,
+    std::optional<std::pair<uint32_t, uint32_t>> resolution,
+    std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
+    std::optional<uint32_t> iso, bool color, bool encode) {
+  return addCamera(dai::toString(socket), socket, resolution, hz, exposure, iso,
+                   color, encode);
+}
+
+bool SensorWrapper::addIMU(std::vector<dai::IMUSensor> sensors, uint32_t hz) {
+  logger->trace("addIMU: START");
+  const bool is_new = imu_sensors.empty();
+  if (is_new) {
+    imu_sensors = std::move(sensors);
     imu_hz = hz;
-    logger->trace("createIMU: END");
-    return node_imu;
+  }
+  logger->trace("addIMU: END");
+  return is_new;
+}
+bool SensorWrapper::addIMU(uint32_t hz) {
+  //TODO maybe add ROTATION_VECTOR and replace ACCELEROMETER_RAW with LINEAR_ACCELERATION
+  return addIMU({dai::IMUSensor::ACCELEROMETER_RAW, dai::IMUSensor::GYROSCOPE_RAW}, hz);
+}
+
+bool SensorWrapper::buildPipeline() {
+  logger->trace("buildPipeline: START");
+
+  if (!imu_sensors.empty()) {
+    node_imu = pipeline->create<dai::node::IMU>();
+    node_imu->enableIMUSensor(imu_sensors, imu_hz);
+    node_imu->setBatchReportThreshold(1);
+    node_imu->setMaxBatchReports(imu_hz);
+
+    queue_imu = node_imu->out.createOutputQueue(imu_hz, false);
+    queue_imu->addCallback([this](std::shared_ptr<dai::ADatatype> data) {
+      proc_imu(std::dynamic_pointer_cast<dai::IMUData>(data));
+    });
+
+    if (!fn_proc_imu)
+      logger->warn("IMU is enabled without callback to process the data!");
+
+    imu_interval = std::chrono::duration<double>(1.0 / imu_hz);
+#ifdef CHECK_MSGDROP
+    imu_interval_limit = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        imu_interval * interval_threshold);
+#endif
   }
 
-  bool SensorWrapper::buildPipeline()
-  {
-    logger->trace("buildPipeline: START");
-#ifdef CHECK_MSGDROP
-    cam_pd = std::chrono::duration<double>(1. / cam_hz);
-    imu_pd = std::chrono::duration<double>(1. / imu_hz);
+  if (!cams.empty()) {
+    if (!fn_proc_cam)
+      logger->warn("Cameras are enabled without callback to process the data!");
 
-    cam_pd_limit = std::chrono::duration_cast<std::chrono::nanoseconds>(cam_pd * pd_thresh);
-    imu_pd_limit = std::chrono::duration_cast<std::chrono::nanoseconds>(imu_pd * pd_thresh);
-
-#ifdef CHECK_MSGDROP_DETAILED
-    cam_pi = cam_hz * pi_thresh;
-    imu_pi = imu_hz * pi_thresh;
-#endif
-#endif
-
-    if (node_imu)
-    {
-      node_imu->enableIMUSensor({dai::IMUSensor::GYROSCOPE_RAW, dai::IMUSensor::ACCELEROMETER_RAW}, imu_hz);
-      node_imu->setBatchReportThreshold(1);
-      node_imu->setMaxBatchReports(imu_hz / 10);
-      node_link_imu = pipeline.create<dai::node::XLinkOut>();
-      node_link_imu->setStreamName("imu");
-      node_imu->out.link(node_link_imu->input);
+    if (!sync_cams.empty()) {
+      node_sync = pipeline->create<dai::node::Sync>();
     }
+    auto sync_hz = 0.0f;
 
-    if (!node_cam.empty())
-    {
-      if (cam_hz == 0)
-      {
-        logger->error("Camera Hz is unset");
+    for (auto &[name, conf] : cams) {
+      const auto node = pipeline->create<dai::node::Camera>()->build(conf.socket);
+      node_cam[name] = node;
+      const auto output_type = conf.color    ? dai::ImgFrame::Type::NV12
+                               : conf.encode ? dai::ImgFrame::Type::YUV400p
+                                             : dai::ImgFrame::Type::GRAY8;
+      dai::Node::Output *node_output;
+      if (conf.resolution.has_value()) {
+        node_output = node->requestOutput(conf.resolution.value(), output_type,
+                                  dai::ImgResizeMode::CROP, conf.hz, false);
+      } else {
+        node_output = node->requestFullResolutionOutput(output_type, conf.hz, true);
+      }
+      if (conf.iso.has_value() && !conf.exposure.has_value()) {
+        logger->error("[{}] ISO can only be used together with manual exposure time", name);
         return false;
       }
+      if (conf.exposure.has_value()) {
+        node->initialControl.setManualExposure(conf.exposure.value(), conf.iso.value_or(100));
+      }
+      node->initialControl.setAntiBandingMode(dai::CameraControl::AntiBandingMode::MAINS_50_HZ);
 
-      if (start_skip < 0)
-      {
-        // Skip the first second to let ISPs 3A adjust
-        start_skip = cam_hz;
+      const auto cam_hz = node->getMaxRequestedFps();
+      cam_interval[name] = std::chrono::duration<double>(1.0 / cam_hz);
+#ifdef CHECK_MSGDROP
+      cam_interval_limit[name] = std::chrono::duration_cast<std::chrono::nanoseconds>(cam_interval[name] * interval_threshold);
+#endif
+
+      if (conf.encode) {
+        auto enc = pipeline->create<dai::node::VideoEncoder>();
+        node_enc[name] = enc;
+        enc->setDefaultProfilePreset(cam_hz, dai::VideoEncoderProperties::Profile::MJPEG);
+        //NOTE: Lossless would be nicer but sees no support
+        // enc->setLossless(true);
+        enc->setQuality(100);
+        node_output->link(enc->input);
+
+        node_output = enc->getOutputRef("bitstream");
       }
 
-      node_sync = pipeline.create<dai::node::Sync>();
-      node_sync->setSyncThreshold(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(0.5 / cam_hz)));
-
-      node_link_cam = pipeline.create<dai::node::XLinkOut>();
-      node_link_cam->setStreamName("cam");
-      node_sync->out.link(node_link_cam->input);
-
-      for (auto &[name, node] : node_cam)
-      {
-        node->setFps(cam_hz);
-        node->setResolution(dai::MonoCameraProperties::SensorResolution::THE_800_P);
+      if (sync_cams.find(name) != sync_cams.end()) {
+        if (sync_hz <= 0.0f) {
+          sync_hz = cam_hz;
+        } else if (sync_hz != cam_hz) {
+          logger->error("All synced cameras must have the same Hz! Camera {} has {}Hz while {}Hz was expected", name, cam_hz, sync_hz);
+          return false;
+        }
         node->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::INPUT);
-        node->initialControl.setAntiBandingMode(dai::CameraControl::AntiBandingMode::MAINS_50_HZ);
-
-        auto crop = pipeline.create<dai::node::ImageManip>();
-        node_crop[name] = crop;
-        crop->initialConfig.setCropRect(0.1, 0.0, 0.9, 1.0);
-        node->out.link(crop->inputImage);
-
-        if (encode)
-        {
-          auto enc = pipeline.create<dai::node::VideoEncoder>();
-          node_enc[name] = enc;
-          enc->setDefaultProfilePreset(node->getFps(), dai::VideoEncoderProperties::Profile::MJPEG);
-          enc->setLossless(true);
-          crop->out.link(enc->input);
-
-          enc->out.link(node_sync->inputs[name]);
-        }
-        else
-        {
-          crop->out.link(node_sync->inputs[name]);
-        }
+        node_output->link(node_sync->inputs[name]);
+      } else {
+        queue_cam[name] = node_output->createOutputQueue(std::ceil(cam_hz), false);
+        queue_cam[name]->addCallback(
+            [this, name](std::shared_ptr<dai::ADatatype> data) {
+              proc_cam(std::dynamic_pointer_cast<dai::ImgFrame>(data), name);
+            });
       }
-      node_cam.begin()->second->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::OUTPUT);
-    }
-    logger->trace("buildPipeline: END");
-    return true;
-  }
-
-  bool SensorWrapper::createDevice()
-  {
-    logger->trace("createDevice: START");
-    device = std::make_unique<dai::Device>(devconf);
-    if (device->getConnectedIMU() != "BMI270")
-    {
-      logger->error("Only IMU of type BMI270");
-      return false;
-    }
-    logger->trace("createDevice: END");
-    return true;
-  }
-
-  bool SensorWrapper::start()
-  {
-    logger->trace("start: START");
-    bool valid = false;
-    device->startPipeline(pipeline);
-    if (!node_cam.empty())
-    {
-      queue_cam = device->getOutputQueue("cam", cam_hz, false);
-      queue_cam->addCallback([this](std::shared_ptr<dai::ADatatype> data)
-                             { proc_synced(std::dynamic_pointer_cast<dai::MessageGroup>(data)); });
-      if (!fn_proc_synced)
-        logger->warn("Starting cameras without function to process the data!");
-      valid = true;
-    }
-    if (node_imu)
-    {
-      queue_imu = device->getOutputQueue("imu", imu_hz, false);
-      queue_imu->addCallback([this](std::shared_ptr<dai::ADatatype> data)
-                             { proc_imu(std::dynamic_pointer_cast<dai::IMUData>(data)); });
-      if (!fn_proc_imu)
-        logger->warn("Starting imu without function to process the data!");
-      valid = true;
-    }
-    logger->trace("start: END");
-    return valid;
-  }
-
-  void SensorWrapper::stop()
-  {
-    logger->trace("stop: START");
-    device.reset();
-    logger->trace("stop: END");
-  }
-
-  void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack)
-  {
-    if (start_skip > 0)
-    {
-      logger->trace("proc_synced: START SKIP");
-      start_skip--;
-      return;
-    }
-    else if (start_skip == 0)
-    {
-      start_skip--;
-      logger->info("Image processing started");
-    }
-
-    logger->trace("proc_synced: START");
-#ifdef CHECK_MSGDROP
-#ifdef CHECK_MSGDROP_DETAILED
-    static uint64_t counter = 0;
-#endif
-    static auto last_tp = msgpack->getTimestamp();
-    const auto &tp = msgpack->getTimestamp();
-    const auto &time_diff = tp - last_tp;
-    last_tp = tp;
-    if (time_diff > cam_pd_limit)
-    {
-      logger->warn("Messages Dropped!! (by {}ms)", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff - cam_pd).count() * 1e3);
-#ifdef CHECK_MSGDROP_DETAILED
-      counter = 0;
-    }
-    else
-    {
-      ++counter;
-      if (counter == cam_pi)
-      {
-        logger->debug("Got {} msgs without problems", cam_pi);
-        counter = 0;
-      }
-      logger->trace("All good (with {}ms)", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff).count() * 1e3);
-#endif
-    }
-#endif
-
-#ifndef NDEBUG
-    logger->trace("sync diff: {}ms", msgpack->getIntervalNs() * 1e-6);
-#endif
-
-    if (fn_proc_synced)
-      fn_proc_synced(msgpack);
-
-    logger->trace("proc_synced: END");
-  }
-
-  void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg)
-  {
-    if (start_skip > 0)
-    {
-      logger->trace("proc_imu: START SKIP");
-      return;
-    }
-
-    logger->trace("proc_imu: START");
-#ifdef CHECK_MSGDROP
-    static auto last_tp = msg->packets.front().gyroscope.getTimestamp();
-#ifdef CHECK_MSGDROP_DETAILED
-    static uint64_t counter = 0;
-#endif
-#endif
-
-    // Old implementation for normal IMU Data
-    for (const auto &pkt : msg->packets)
-    {
-      if (fn_proc_imu)
-        fn_proc_imu(pkt);
 
 #ifdef CHECK_MSGDROP
-      const auto &tp = pkt.gyroscope.getTimestamp();
-      const auto &time_diff = tp - last_tp;
-      last_tp = tp;
-      if (time_diff > imu_pd_limit)
-      {
-        logger->warn("IMU Messages Dropped!! (by {})", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff - imu_pd).count());
-#ifdef CHECK_MSGDROP_DETAILED
-        counter = 0;
-      }
-      else
-      {
-        ++counter;
-        if (counter == imu_pi)
-        {
-          logger->debug("IMU got {} msgs without problems", imu_pi);
-          counter = 0;
-        }
-        logger->trace("All good (with {})", std::chrono::duration_cast<std::chrono::duration<double>>(time_diff).count());
-#endif
-      }
+      last_cam_tp[name] = std::chrono::steady_clock::time_point::max();
 #endif
     }
-    logger->trace("proc_imu: END");
+
+    if (!sync_cams.empty()) {
+      sync_interval = std::chrono::duration<double>(1.0 / sync_hz);
+#ifdef CHECK_MSGDROP
+      sync_interval_limit = std::chrono::duration_cast<std::chrono::nanoseconds>(sync_interval * interval_threshold);
+#endif
+      node_sync->setSyncThreshold(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::duration<double>(0.5 / sync_hz)));
+
+      queue_cam["sync"] = node_sync->out.createOutputQueue(std::ceil(sync_hz), false);
+      queue_cam["sync"]->addCallback(
+          [this](std::shared_ptr<dai::ADatatype> data) {
+            proc_synced(std::dynamic_pointer_cast<dai::MessageGroup>(data));
+          });
+
+      if (sync_type == SyncType::BOARD) {
+        if (board_revision) {
+          // Trigger node for external FSYNC signal (required for AR0234)
+          node_fsync = pipeline->create<dai::node::Script>();
+          node_fsync->setProcessor(sync_proc);
+          std::string script;
+          if (sync_proc == dai::ProcessorType::LEON_MSS) {
+            script = fmt::format(FSYNC_LOOP_PY_SCRIPT, *board_revision, sync_interval.count());
+          } else if (sync_proc == dai::ProcessorType::LEON_CSS) {
+            script = fmt::format(FSYNC_THREADING_PY_SCRIPT, *board_revision, sync_interval.count());
+          } else {
+            logger->error("Unsupported processor for FSYNC script");
+            return false;
+          }
+          node_fsync->setScript(script);
+          logger->debug("FSYNC script:\n{}", script);
+        } else {
+          logger->error("FSYNC can not be generated without known board revision");
+          return false;
+        }
+      } else if (sync_type == SyncType::CAMERA) {
+        auto &[name, node] = *node_cam.begin();
+        node->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::OUTPUT);
+        logger->debug("Camera \"{}\" set to output FSYNC signal", name);
+      }
+    }
   }
 
+  logger->trace("buildPipeline: END");
+  return true;
 }
+
+void SensorWrapper::start() {
+  logger->trace("start: START");
+  pipeline->start();
+  logger->trace("start: END");
+}
+
+void SensorWrapper::stop() {
+  logger->trace("stop: START");
+  pipeline->stop();
+  logger->trace("stop: END");
+}
+
+void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
+  // logger->trace("proc_synced: START");
+
+#ifdef CHECK_MSGDROP
+  static auto last_tp = msgpack->getTimestampDevice();
+  const auto tp = msgpack->getTimestampDevice();
+  const auto time_diff = tp - last_tp;
+  last_tp = tp;
+  if (time_diff > sync_interval_limit) {
+    const auto time_delay = time_diff - sync_interval;
+    logger->warn(
+        "{} Synced Messages Dropped!! (by {:.3f}ms)",
+        std::round(time_delay / sync_interval),
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_delay).count());
+  }
+#ifdef TRACE_MSGS
+  else {
+    logger->trace(
+        "Synced frames received with delay: {:.3f} ms in interval: {:.3f} us",
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count(),
+        std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
+          std::chrono::nanoseconds(msgpack->getIntervalNs())).count());
+  }
+#endif
+#endif
+
+  std::queue<std::future<void>> futures;
+  for (const auto &[name, msg] : *msgpack) {
+    futures.push(std::async(std::launch::async, [this, msg, name]() {
+      proc_cam(std::dynamic_pointer_cast<dai::ImgFrame>(msg), name);
+    }));
+  }
+  while (!futures.empty()) {
+    futures.front().wait();
+    futures.pop();
+  }
+
+  // logger->trace("proc_synced: END");
+}
+
+void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::string &name) {
+  // logger->trace("proc_cam: START");
+#ifdef CHECK_MSGDROP
+  const auto tp = msg->getTimestampDevice();
+  const auto time_diff = tp - last_cam_tp[name];
+  last_cam_tp[name] = tp;
+  const auto interval = cam_interval[name];
+  if (time_diff > cam_interval_limit[name]) {
+    const auto time_delay = time_diff - interval;
+    logger->warn(
+        "[{}] {} Frames Dropped!! (by {:.3f}ms)", name,
+        std::round(time_delay / interval),
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff - interval).count());
+  }
+#ifdef TRACE_MSGS
+  else {
+    logger->trace(
+        "[{}] Frame received with delay: {:.3f} ms", name,
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count());
+  }
+#endif
+#endif
+
+  if (fn_proc_cam) {
+    fn_proc_cam(msg, name);
+  }
+
+  // logger->trace("proc_cam: END");
+}
+
+void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
+  // logger->trace("proc_imu: START");
+#ifdef CHECK_MSGDROP
+  static auto last_tp = msg->packets.front().gyroscope.getTimestampDevice();
+#endif
+
+  // Old implementation for normal IMU Data
+  for (const auto &pkt : msg->packets) {
+    if (fn_proc_imu) {
+      fn_proc_imu(pkt);
+    }
+
+#ifdef CHECK_MSGDROP
+    const auto tp = pkt.gyroscope.getTimestampDevice();
+    const auto time_diff = tp - last_tp;
+    last_tp = tp;
+    if (time_diff > imu_interval_limit) {
+      const auto time_delay = time_diff - imu_interval;
+      logger->warn(
+          "{} IMU Messages Dropped!! (by {:.3f}ms)",
+          std::round(time_delay / imu_interval),
+          std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff - imu_interval).count());
+    }
+#ifdef TRACE_MSGS
+    else {
+      logger->trace(
+          "IMU packets received with delay: {:.3f} ms",
+          std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count());
+    }
+#endif
+#endif
+  }
+  // logger->trace("proc_imu: END");
+}
+
+} // namespace dai_vi

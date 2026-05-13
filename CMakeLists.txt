@@ -1,14 +1,33 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.12)
 project(dai_vi LANGUAGES CXX)
 
+set(DEFAULT_BUILD_EXEC OFF)
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
   add_compile_options(-Wall -Wextra -Wpedantic)
+  set(DEFAULT_BUILD_EXEC ON)
 endif()
 
-find_package(depthai 2.29 CONFIG REQUIRED)
+find_package(depthai 3 CONFIG REQUIRED)
 
-add_library(dai_vi STATIC src/dai_vi.cpp)
-target_include_directories(dai_vi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# Generate header with embedded python scripts
+file(GLOB DEVICE_PY_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/device/*.py")
+set(DEVICE_SCRIPTS_HPP "${CMAKE_CURRENT_BINARY_DIR}/generated/device_scripts.hpp")
+add_custom_command(
+  OUTPUT ${DEVICE_SCRIPTS_HPP}
+  COMMAND ${CMAKE_COMMAND}
+    -D "SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/device"
+    -D "OUTPUT_PATH=${DEVICE_SCRIPTS_HPP}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_python.cmake"
+  DEPENDS ${DEVICE_PY_FILES}
+  COMMENT "Embedding Python device scripts"
+)
+add_custom_target(dai_vi_device_scripts DEPENDS ${DEVICE_SCRIPTS_HPP})
+
+add_library(dai_vi STATIC src/dai_vi.cpp ${DEVICE_SCRIPTS_HPP})
+target_include_directories(dai_vi
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
 target_link_libraries(dai_vi PUBLIC depthai::core)
 set_target_properties(dai_vi PROPERTIES
   CXX_STANDARD 17
@@ -16,20 +35,20 @@ set_target_properties(dai_vi PROPERTIES
   POSITION_INDEPENDENT_CODE ON
 )
 
-option(CHECK_MSGDROP "Add active checks for dropped messages" ON)
+option(CHECK_MSGDROP "Run checks for dropped messages on each received message" ON)
 if (${CHECK_MSGDROP})
   target_compile_definitions(dai_vi PUBLIC CHECK_MSGDROP)
 endif()
-option(CHECK_MSGDROP_DETAILED "Add more detailed active checks for dropped messages" OFF)
-if (${CHECK_MSGDROP_DETAILED})
-  target_compile_definitions(dai_vi PUBLIC CHECK_MSGDROP_DETAILED)
+option(TRACE_MSGS "Log detailed information about message timing and intervals" ON)
+if (${TRACE_MSGS})
+  target_compile_definitions(dai_vi PUBLIC TRACE_MSGS)
 endif()
 option(DRYRUN "Run DepthAI pipeline without IO to disk" OFF)
 if (${DRYRUN})
   target_compile_definitions(dai_vi PUBLIC DRYRUN)
 endif()
 
-option(BUILD_EXEC "Build executables for capturing and viewing" ON)
+option(BUILD_EXEC "Build executables for capturing and viewing" ${DEFAULT_BUILD_EXEC})
 if(${BUILD_EXEC})
   message(STATUS "Building executables")
 
