@@ -8,6 +8,7 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
 endif()
 
 find_package(depthai 3 CONFIG REQUIRED)
+find_package(spdlog REQUIRED)
 
 # Generate header with embedded python scripts
 file(GLOB DEVICE_PY_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/device/*.py")
@@ -28,7 +29,7 @@ target_include_directories(dai_vi
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
-target_link_libraries(dai_vi PUBLIC depthai::core)
+target_link_libraries(dai_vi PUBLIC depthai::core spdlog::spdlog_header_only)
 set_target_properties(dai_vi PROPERTIES
   CXX_STANDARD 17
   CXX_STANDARD_REQUIRED YES

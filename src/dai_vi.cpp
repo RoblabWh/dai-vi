@@ -12,12 +12,10 @@
 #include <vector>
 
 #include "depthai/depthai.hpp"
+#include "spdlog/spdlog.h"
 #include "spdlog/cfg/env.h"
-#include "spdlog/sinks/stdout_color_sinks.h"
-
 
 namespace dai_vi {
-auto logger = spdlog::stdout_color_mt("dai_vi");
 
 struct CameraConfig {
   dai::CameraBoardSocket socket;
@@ -33,7 +31,7 @@ std::optional<int> detect_board_revision(const std::unique_ptr<dai::Device> &dev
   try {
     // Parse board revision to determine GPIO pinout
     const auto dev_data = dev->readCalibration2().getEepromData();
-    logger->debug("Product name: {}, Board name: {}, Board revision: {}", dev_data.productName, dev_data.boardName, dev_data.boardRev);
+    spdlog::debug("Product name: {}, Board name: {}, Board revision: {}", dev_data.productName, dev_data.boardName, dev_data.boardRev);
     if (dev_data.productName != "OAK-FFC-4P" || dev_data.boardName != "DD2090") {
       throw std::runtime_error("Unsupported product/board");
     }
@@ -41,18 +39,18 @@ std::optional<int> detect_board_revision(const std::unique_ptr<dai::Device> &dev
       throw std::runtime_error("Failed to parse revision number");
     }
     const auto board_revision = std::stoi(dev_data.boardRev.substr(1, 2));
-    logger->debug("Parsed board revision: {}", board_revision);
+    spdlog::debug("Parsed board revision: {}", board_revision);
 
     return board_revision;
   } catch (const std::runtime_error &e) {
-    logger->warn("Failed to detect board revision: {}", e.what());
+    spdlog::warn("Failed to detect board revision: {}", e.what());
     return std::nullopt;
   }
 }
 
 SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id, dai::LogLevel dai_log_level) {
   spdlog::cfg::load_env_levels();
-  logger->trace("Constructor: START");
+  spdlog::trace("Constructor: START");
 
   // Detect board and revision
   std::string dev_id;
@@ -64,7 +62,7 @@ SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id, dai::L
   }
   dev_id = dev->getDeviceId();
   board_revision = detect_board_revision(dev);
-  logger->info("Connected to device with id: {}", dev_id);
+  spdlog::info("Connected to device with id: {}", dev_id);
   dev.reset();
 
   // Wait for device to come up again
@@ -87,13 +85,13 @@ SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id, dai::L
   pipeline = std::make_unique<dai::Pipeline>(std::make_shared<dai::Device>(dev_cfg, dev_info, dai::UsbSpeed::SUPER_PLUS));
   pipeline->setXLinkChunkSize(0);
 
-  logger->trace("Constructor: END");
+  spdlog::trace("Constructor: END");
 }
 
 SensorWrapper::~SensorWrapper() {
-  logger->trace("Destructor: START");
+  spdlog::trace("Destructor: START");
   stop();
-  logger->trace("Destructor: END");
+  spdlog::trace("Destructor: END");
 }
 
 bool SensorWrapper::addCamera(
@@ -101,12 +99,12 @@ bool SensorWrapper::addCamera(
     std::optional<std::pair<uint32_t, uint32_t>> resolution,
     std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
     std::optional<uint32_t> iso, bool color, bool encode) {
-  logger->trace("addCamera: START");
+  spdlog::trace("addCamera: START");
   const bool is_new = cams.find(name) == cams.end();
   if (is_new) {
     cams[name] = {socket, resolution, hz, exposure, iso, color, encode};
   }
-  logger->trace("addCamera: END");
+  spdlog::trace("addCamera: END");
   return is_new;
 }
 bool SensorWrapper::addCamera(
@@ -119,13 +117,13 @@ bool SensorWrapper::addCamera(
 }
 
 bool SensorWrapper::addIMU(std::vector<dai::IMUSensor> sensors, uint32_t hz) {
-  logger->trace("addIMU: START");
+  spdlog::trace("addIMU: START");
   const bool is_new = imu_sensors.empty();
   if (is_new) {
     imu_sensors = std::move(sensors);
     imu_hz = hz;
   }
-  logger->trace("addIMU: END");
+  spdlog::trace("addIMU: END");
   return is_new;
 }
 bool SensorWrapper::addIMU(uint32_t hz) {
@@ -134,7 +132,7 @@ bool SensorWrapper::addIMU(uint32_t hz) {
 }
 
 bool SensorWrapper::buildPipeline() {
-  logger->trace("buildPipeline: START");
+  spdlog::trace("buildPipeline: START");
 
   if (!imu_sensors.empty()) {
     node_imu = pipeline->create<dai::node::IMU>();
@@ -148,7 +146,7 @@ bool SensorWrapper::buildPipeline() {
     });
 
     if (!fn_proc_imu)
-      logger->warn("IMU is enabled without callback to process the data!");
+      spdlog::warn("IMU is enabled without callback to process the data!");
 
     imu_interval = std::chrono::duration<double>(1.0 / imu_hz);
 #ifdef CHECK_MSGDROP
@@ -159,7 +157,7 @@ bool SensorWrapper::buildPipeline() {
 
   if (!cams.empty()) {
     if (!fn_proc_cam)
-      logger->warn("Cameras are enabled without callback to process the data!");
+      spdlog::warn("Cameras are enabled without callback to process the data!");
 
     if (!sync_cams.empty()) {
       node_sync = pipeline->create<dai::node::Sync>();
@@ -180,7 +178,7 @@ bool SensorWrapper::buildPipeline() {
         node_output = node->requestFullResolutionOutput(output_type, conf.hz, true);
       }
       if (conf.iso.has_value() && !conf.exposure.has_value()) {
-        logger->error("[{}] ISO can only be used together with manual exposure time", name);
+        spdlog::error("[{}] ISO can only be used together with manual exposure time", name);
         return false;
       }
       if (conf.exposure.has_value()) {
@@ -210,7 +208,7 @@ bool SensorWrapper::buildPipeline() {
         if (sync_hz <= 0.0f) {
           sync_hz = cam_hz;
         } else if (sync_hz != cam_hz) {
-          logger->error("All synced cameras must have the same Hz! Camera {} has {}Hz while {}Hz was expected", name, cam_hz, sync_hz);
+          spdlog::error("All synced cameras must have the same Hz! Camera {} has {}Hz while {}Hz was expected", name, cam_hz, sync_hz);
           return false;
         }
         node->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::INPUT);
@@ -254,41 +252,41 @@ bool SensorWrapper::buildPipeline() {
           } else if (sync_proc == dai::ProcessorType::LEON_CSS) {
             script = fmt::format(FSYNC_THREADING_PY_SCRIPT, *board_revision, sync_interval.count());
           } else {
-            logger->error("Unsupported processor for FSYNC script");
+            spdlog::error("Unsupported processor for FSYNC script");
             return false;
           }
           node_fsync->setScript(script);
-          logger->debug("FSYNC script:\n{}", script);
+          spdlog::debug("FSYNC script:\n{}", script);
         } else {
-          logger->error("FSYNC can not be generated without known board revision");
+          spdlog::error("FSYNC can not be generated without known board revision");
           return false;
         }
       } else if (sync_type == SyncType::CAMERA) {
         auto &[name, node] = *node_cam.begin();
         node->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::OUTPUT);
-        logger->debug("Camera \"{}\" set to output FSYNC signal", name);
+        spdlog::debug("Camera \"{}\" set to output FSYNC signal", name);
       }
     }
   }
 
-  logger->trace("buildPipeline: END");
+  spdlog::trace("buildPipeline: END");
   return true;
 }
 
 void SensorWrapper::start() {
-  logger->trace("start: START");
+  spdlog::trace("start: START");
   pipeline->start();
-  logger->trace("start: END");
+  spdlog::trace("start: END");
 }
 
 void SensorWrapper::stop() {
-  logger->trace("stop: START");
+  spdlog::trace("stop: START");
   pipeline->stop();
-  logger->trace("stop: END");
+  spdlog::trace("stop: END");
 }
 
 void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
-  // logger->trace("proc_synced: START");
+  // spdlog::trace("proc_synced: START");
 
 #ifdef CHECK_MSGDROP
   static auto last_tp = msgpack->getTimestampDevice();
@@ -297,14 +295,14 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
   last_tp = tp;
   if (time_diff > sync_interval_limit) {
     const auto time_delay = time_diff - sync_interval;
-    logger->warn(
+    spdlog::warn(
         "{} Synced Messages Dropped!! (by {:.3f}ms)",
         std::round(time_delay / sync_interval),
         std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_delay).count());
   }
 #ifdef TRACE_MSGS
   else {
-    logger->trace(
+    spdlog::trace(
         "Synced frames received with delay: {:.3f} ms in interval: {:.3f} us",
         std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count(),
         std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
@@ -324,11 +322,11 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
     futures.pop();
   }
 
-  // logger->trace("proc_synced: END");
+  // spdlog::trace("proc_synced: END");
 }
 
 void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::string &name) {
-  // logger->trace("proc_cam: START");
+  // spdlog::trace("proc_cam: START");
 #ifdef CHECK_MSGDROP
   const auto tp = msg->getTimestampDevice();
   const auto time_diff = tp - last_cam_tp[name];
@@ -336,14 +334,14 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
   const auto interval = cam_interval[name];
   if (time_diff > cam_interval_limit[name]) {
     const auto time_delay = time_diff - interval;
-    logger->warn(
+    spdlog::warn(
         "[{}] {} Frames Dropped!! (by {:.3f}ms)", name,
         std::round(time_delay / interval),
         std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff - interval).count());
   }
 #ifdef TRACE_MSGS
   else {
-    logger->trace(
+    spdlog::trace(
         "[{}] Frame received with delay: {:.3f} ms", name,
         std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count());
   }
@@ -354,11 +352,11 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
     fn_proc_cam(msg, name);
   }
 
-  // logger->trace("proc_cam: END");
+  // spdlog::trace("proc_cam: END");
 }
 
 void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
-  // logger->trace("proc_imu: START");
+  // spdlog::trace("proc_imu: START");
 #ifdef CHECK_MSGDROP
   static auto last_tp = msg->packets.front().gyroscope.getTimestampDevice();
 #endif
@@ -375,21 +373,21 @@ void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
     last_tp = tp;
     if (time_diff > imu_interval_limit) {
       const auto time_delay = time_diff - imu_interval;
-      logger->warn(
+      spdlog::warn(
           "{} IMU Messages Dropped!! (by {:.3f}ms)",
           std::round(time_delay / imu_interval),
           std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff - imu_interval).count());
     }
 #ifdef TRACE_MSGS
     else {
-      logger->trace(
+      spdlog::trace(
           "IMU packets received with delay: {:.3f} ms",
           std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count());
     }
 #endif
 #endif
   }
-  // logger->trace("proc_imu: END");
+  // spdlog::trace("proc_imu: END");
 }
 
 } // namespace dai_vi
