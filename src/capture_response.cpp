@@ -1,33 +1,34 @@
-#include "spdlog/spdlog.h"
-#include "spdlog/cfg/env.h"
-#include "spdlog/sinks/stdout_color_sinks.h"
+#include "dai_io.hpp"
+#include "dai_vi.hpp"
+
 #include "argparse/argparse.hpp"
+#include "spdlog/cfg/env.h"
+#include "spdlog/spdlog.h"
 #include <signal.h>
 
-#include "dai_vi.hpp"
-#include "dai_io.hpp"
+const uint32_t INTERNAL_DELAY = 8;
 
-const uint8_t INTERNAL_DELAY = 8;
-
-auto logger = spdlog::stdout_color_mt("dai_vi_capture_response");
-bool cancel = false;
+std::atomic_bool cancel = false;
 std::unique_ptr<dai_vi::SensorWrapper> sensor;
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   spdlog::cfg::load_env_levels();
 
   // Parse Arguments
   argparse::ArgumentParser prog("capture_response");
-  prog.add_argument("output")
-      .help("Path to output directory");
+  prog.add_argument("output").help("Path to output directory");
   prog.add_argument("-f", "--force")
-      .help("Force overwrite output directory (CAUTION!: directory gets deleted recursively)")
+      .help("Force overwrite output directory (CAUTION!: directory gets "
+            "deleted recursively)")
       .flag();
+  prog.add_argument("--dry-run")
+      .help("Run without writing any files (for testing)")
+      .flag();
+  prog.add_argument("--device").help("Luxonis device ID or name");
   prog.add_argument("--cam-hz")
       .help("Rate to capture images in Hz")
-      .default_value<uint16_t>(20)
-      .scan<'u', uint16_t>();
+      .default_value<float>(20)
+      .scan<'g', float>();
   prog.add_argument("--start")
       .help("Start of exposure range in microseconds (us)")
       .scan<'u', uint32_t>();
@@ -43,103 +44,104 @@ int main(int argc, char **argv)
       .default_value<uint32_t>(2)
       .scan<'u', uint32_t>();
 
-  try
-  {
+  try {
     prog.parse_args(argc, argv);
-  }
-  catch (const std::exception &e)
-  {
-    logger->error(e.what());
-    std::cout << prog << std::endl;
+  } catch (const std::exception &e) {
+    spdlog::error(e.what());
+    std::cerr << prog << std::endl;
     return 1;
   }
 
-  uint16_t cam_hz = prog.get<uint16_t>("--cam-hz");
-  uint32_t samples = prog.get<uint32_t>("--samples");
-  uint32_t exposure_step = prog.get<uint32_t>("--step");
-  uint32_t exposure_start = prog.is_used("--start") ? prog.get<uint32_t>("--start") : exposure_step;
-  uint32_t exposure_stop = prog.is_used("--stop") ? prog.get<uint32_t>("--stop") : 1.0 / cam_hz * 1e6;
+  const auto output = prog.get<std::string>("output");
+  const auto force = prog.get<bool>("--force");
+  const auto dry_run = prog.get<bool>("--dry-run");
+  const auto device = prog.present<std::string>("--device");
+  const auto cam_hz = prog.get<float>("--cam-hz");
+  const auto samples = prog.get<uint32_t>("--samples");
+  const auto exposure_step = prog.get<uint32_t>("--step");
+  const auto exposure_start =
+      prog.present<uint32_t>("--start").value_or(exposure_step);
+  const auto exposure_stop =
+      prog.present<uint32_t>("--stop").value_or(1e6 / cam_hz);
 
-  // Setup DepthAi Pipeline
-  sensor = std::make_unique<dai_vi::SensorWrapper>();
+  // Setup Pipeline
+  sensor = std::make_unique<dai_vi::SensorWrapper>(device);
 
-  auto xlink_in = sensor->pipeline.create<dai::node::XLinkIn>();
-  xlink_in->setStreamName("control");
-
-  for (uint8_t i = 0; i < 4; ++i)
-  {
-    auto cam = sensor->createCamera("cam" + std::to_string(i), static_cast<dai::CameraBoardSocket>(i));
-    cam->initialControl.setManualExposure(exposure_start, 100);
-    cam->initialControl.setMisc("manual-exposure-handling", "fast");
-    xlink_in->out.link(cam->inputControl);
+  for (uint8_t i = 0; i < 4; ++i) {
+    const auto name = "cam" + std::to_string(i);
+    sensor->addCamera(
+        name, static_cast<dai::CameraBoardSocket>(i), std::nullopt, cam_hz,
+        std::chrono::microseconds(exposure_start), std::nullopt, false, false);
+    sensor->sync_cams.insert(name);
   }
-  sensor->cam_hz = cam_hz;
-  sensor->encode = true;
-  sensor->start_skip = 0;
-  sensor->fn_proc_synced = [](std::shared_ptr<dai::MessageGroup> msgpack) -> void
-  { (void)msgpack; };
+  sensor->fn_proc_cam = [](auto msg, const auto &name) -> void {
+    (void)msg;
+    (void)name;
+  };
 
-  if (!sensor->buildPipeline())
-  {
-    logger->error("Failed to build pipeline!");
+  if (!sensor->buildPipeline()) {
+    spdlog::error("Failed to build pipeline!");
     return 1;
   }
-  if (!sensor->createDevice())
-  {
-    logger->error("Failed to create device!");
-    return 1;
+
+  std::unordered_map<std::string, std::shared_ptr<dai::InputQueue>> queue_ctrl;
+  for (auto &[name, node] : sensor->node_cam) {
+    node->initialControl.setMisc("manual-exposure-handling", "fast");
+    queue_ctrl[name] = node->inputControl.createInputQueue(1, true);
   }
+  auto queue_sync = sensor->queue_cam["sync"];
+  queue_sync->setMaxSize(1);
+  queue_sync->setBlocking(true);
 
   // Setup Output Files
-  if (!setup_output_folder(sensor, prog.get<std::string>("output"), prog.get<bool>("--force")))
-  {
-    logger->error("Failed to create output folder!");
-    return 1;
+  if (dry_run) {
+    spdlog::warn("Running in dry-run mode, no files will be written!");
+    sensor->fn_proc_cam = nullptr;
+    sensor->fn_proc_imu = nullptr;
+  } else {
+    spdlog::info("Output will be written to: {}", output);
+    if (!setup_output_folder(sensor, output, force)) {
+      spdlog::error("Failed to create output folder!");
+      return 1;
+    }
   }
 
-  // Start DepthAi Pipeline
-  if (!sensor->start())
-  {
-    logger->error("Failed to start sensor!");
-    return 1;
-  }
-  sensor->queue_cam->setMaxSize(1);
-  sensor->queue_cam->setBlocking(true);
-  auto queue_in = sensor->device->getInputQueue("control", 1, true);
+  // Start Pipeline
+  signal(SIGINT, [](int signum) {
+    (void)signum;
+    spdlog::info("signal: SIGINT");
+    cancel = true;
+  });
+  sensor->start();
 
-  signal(SIGINT, [](int signum)
-         {
-    (void) signum;
-    logger->info("signal: SIGINT");
-    cancel = true; });
-
-  // Let it run
-  uint8_t start_skip = INTERNAL_DELAY;
-  for (uint32_t exposure = exposure_start; exposure <= exposure_stop && !cancel; exposure += exposure_step)
-  {
-    dai::CameraControl control;
-    control.setManualExposure(exposure, 100);
-    queue_in->send(control);
-
-    for (uint32_t sample = 0; sample < samples && !cancel; ++sample)
-    {
-      if (start_skip > 0)
-      {
-        sensor->queue_cam->get();
-        --start_skip;
-      }
-      else
-      {
-        write_jpeg_with_exposure(std::dynamic_pointer_cast<dai::MessageGroup>(sensor->queue_cam->get()));
-      }
+  // Handle exposure changes
+  uint32_t start_skip = INTERNAL_DELAY;
+  for (uint32_t exposure = exposure_start; exposure <= exposure_stop && !cancel;
+       exposure += exposure_step) {
+    auto control = std::make_shared<dai::CameraControl>();
+    control->setManualExposure(exposure, 100);
+    for (auto &[name, queue_in] : queue_ctrl) {
+      queue_ctrl[name]->send(control);
     }
 
-    logger->info("exposure: {}us/{}us - {:3.2f}%", exposure, exposure_stop, exposure * 100.0 / exposure_stop);
+    for (uint32_t sample = 0; sample < samples && !cancel; ++sample) {
+      if (start_skip > 0) {
+        --start_skip;
+      }
+      if (start_skip == 1 && !dry_run) {
+        sensor->fn_proc_cam = write_jpeg_with_exposure;
+      }
+      queue_sync->get();
+    }
+
+    spdlog::info("exposure: {}us/{}us - {:3.2f}%", exposure, exposure_stop,
+                 exposure * 100.0 / exposure_stop);
   }
-  for (uint16_t i = 0; i < INTERNAL_DELAY && !cancel; ++i)
-  {
-    write_jpeg_with_exposure(std::dynamic_pointer_cast<dai::MessageGroup>(sensor->queue_cam->get()));
+  for (uint32_t i = 0; i < INTERNAL_DELAY && !cancel; ++i) {
+    queue_sync->get();
   }
+
+  // Cleanup
   sensor->stop();
   close_output_files();
 }
