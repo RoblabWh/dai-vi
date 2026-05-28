@@ -1,19 +1,23 @@
 #include "dai_vi.hpp"
 #include "device_scripts.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ratio>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "depthai/depthai.hpp"
-#include "spdlog/spdlog.h"
 #include "spdlog/cfg/env.h"
+#include "spdlog/spdlog.h"
 
 namespace dai_vi {
 
@@ -24,10 +28,26 @@ struct CameraConfig {
   std::optional<std::chrono::microseconds> exposure;
   std::optional<uint32_t> iso;
   bool color;
-  bool encode;
+  std::optional<uint32_t> encode;
 };
 
-std::optional<int> detect_board_revision(const std::unique_ptr<dai::Device> &dev) {
+static dai::LogLevel log_level_from_env() {
+  const char *env = std::getenv("DEPTHAI_DEVICE_LEVEL");
+  if (!env) return dai::LogLevel::WARN;
+  std::string upper(env);
+  std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+  if (upper == "TRACE")    return dai::LogLevel::TRACE;
+  if (upper == "DEBUG")    return dai::LogLevel::DEBUG;
+  if (upper == "INFO")     return dai::LogLevel::INFO;
+  if (upper == "WARN")     return dai::LogLevel::WARN;
+  if (upper == "ERR")      return dai::LogLevel::ERR;
+  if (upper == "CRITICAL") return dai::LogLevel::CRITICAL;
+  if (upper == "OFF")      return dai::LogLevel::OFF;
+  spdlog::warn("Unknown DEPTHAI_DEVICE_LEVEL value '{}', defaulting to WARN", env);
+  return dai::LogLevel::WARN;
+}
+
+static std::optional<int> detect_board_revision(const std::unique_ptr<dai::Device> &dev) {
   try {
     // Parse board revision to determine GPIO pinout
     const auto dev_data = dev->readCalibration2().getEepromData();
@@ -48,9 +68,10 @@ std::optional<int> detect_board_revision(const std::unique_ptr<dai::Device> &dev
   }
 }
 
-SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id, dai::LogLevel dai_log_level) {
+SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id) {
   spdlog::cfg::load_env_levels();
   spdlog::trace("Constructor: START");
+  const auto device_log_level = log_level_from_env();
 
   // Detect board and revision
   std::string dev_id;
@@ -75,8 +96,8 @@ SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id, dai::L
 
   // Configure device and pipeline
   dai::DeviceBase::Config dev_cfg;
-  dev_cfg.logLevel = dai_log_level;
-  dev_cfg.outputLogLevel = dai_log_level;
+  dev_cfg.logLevel = device_log_level;
+  dev_cfg.outputLogLevel = device_log_level;
   if (board_revision && *board_revision < 7) {
     // Connect FSIN_2LANE and FSIN_4LANE on older revisions
     const auto fsin_mode_select = *board_revision < 6 ? 6 : 38;
@@ -98,7 +119,7 @@ bool SensorWrapper::addCamera(
     const std::string &name, dai::CameraBoardSocket socket,
     std::optional<std::pair<uint32_t, uint32_t>> resolution,
     std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
-    std::optional<uint32_t> iso, bool color, bool encode) {
+    std::optional<uint32_t> iso, bool color, std::optional<uint32_t> encode) {
   spdlog::trace("addCamera: START");
   const bool is_new = cams.find(name) == cams.end();
   if (is_new) {
@@ -111,7 +132,7 @@ bool SensorWrapper::addCamera(
     dai::CameraBoardSocket socket,
     std::optional<std::pair<uint32_t, uint32_t>> resolution,
     std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
-    std::optional<uint32_t> iso, bool color, bool encode) {
+    std::optional<uint32_t> iso, bool color, std::optional<uint32_t> encode) {
   return addCamera(dai::toString(socket), socket, resolution, hz, exposure, iso,
                    color, encode);
 }
@@ -131,6 +152,16 @@ bool SensorWrapper::addIMU(uint32_t hz) {
   return addIMU({dai::IMUSensor::ACCELEROMETER_RAW, dai::IMUSensor::GYROSCOPE_RAW}, hz);
 }
 
+void SensorWrapper::resetCamCallback(CamCallback callback) {
+  std::unique_lock<std::shared_mutex> lock(mtx_proc_cam);
+  fn_proc_cam = std::move(callback);
+}
+
+void SensorWrapper::resetIMUCallback(IMUCallback callback) {
+  std::unique_lock<std::shared_mutex> lock(mtx_proc_imu);
+  fn_proc_imu = std::move(callback);
+}
+
 bool SensorWrapper::buildPipeline() {
   spdlog::trace("buildPipeline: START");
 
@@ -140,7 +171,7 @@ bool SensorWrapper::buildPipeline() {
     node_imu->setBatchReportThreshold(1);
     node_imu->setMaxBatchReports(imu_hz);
 
-    queue_imu = node_imu->out.createOutputQueue(imu_hz, false);
+    queue_imu = node_imu->out.createOutputQueue(0, false);
     queue_imu->addCallback([this](std::shared_ptr<dai::ADatatype> data) {
       proc_imu(std::dynamic_pointer_cast<dai::IMUData>(data));
     });
@@ -196,9 +227,12 @@ bool SensorWrapper::buildPipeline() {
         auto enc = pipeline->create<dai::node::VideoEncoder>();
         node_enc[name] = enc;
         enc->setDefaultProfilePreset(cam_hz, dai::VideoEncoderProperties::Profile::MJPEG);
-        //NOTE: Lossless would be nicer but sees no support
-        // enc->setLossless(true);
-        enc->setQuality(100);
+        const auto &lossy = conf.encode.value();
+        if (lossy >= 0) {
+          enc->setQuality(lossy);
+        } else {
+          enc->setLossless(true);
+        }
         node_output->link(enc->input);
 
         node_output = enc->getOutputRef("bitstream");
@@ -214,7 +248,7 @@ bool SensorWrapper::buildPipeline() {
         node->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::INPUT);
         node_output->link(node_sync->inputs[name]);
       } else {
-        queue_cam[name] = node_output->createOutputQueue(std::ceil(cam_hz), false);
+        queue_cam[name] = node_output->createOutputQueue(0, false);
         queue_cam[name]->addCallback(
             [this, name](std::shared_ptr<dai::ADatatype> data) {
               proc_cam(std::dynamic_pointer_cast<dai::ImgFrame>(data), name);
@@ -235,11 +269,10 @@ bool SensorWrapper::buildPipeline() {
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::duration<double>(0.5 / sync_hz)));
 
-      queue_cam["sync"] = node_sync->out.createOutputQueue(std::ceil(sync_hz), false);
-      queue_cam["sync"]->addCallback(
-          [this](std::shared_ptr<dai::ADatatype> data) {
-            proc_synced(std::dynamic_pointer_cast<dai::MessageGroup>(data));
-          });
+      queue_sync = node_sync->out.createOutputQueue(0, false);
+      queue_sync->addCallback([this](std::shared_ptr<dai::ADatatype> data) {
+        proc_synced(std::dynamic_pointer_cast<dai::MessageGroup>(data));
+      });
 
       if (sync_type == SyncType::BOARD) {
         if (board_revision) {
@@ -348,8 +381,11 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
 #endif
 #endif
 
-  if (fn_proc_cam) {
-    fn_proc_cam(msg, name);
+  {
+    std::shared_lock<std::shared_mutex> lock(mtx_proc_cam);
+    if (fn_proc_cam) {
+      fn_proc_cam(msg, name);
+    }
   }
 
   // spdlog::trace("proc_cam: END");
@@ -363,8 +399,11 @@ void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
 
   // Old implementation for normal IMU Data
   for (const auto &pkt : msg->packets) {
-    if (fn_proc_imu) {
-      fn_proc_imu(pkt);
+    {
+      std::shared_lock<std::shared_mutex> lock(mtx_proc_imu);
+      if (fn_proc_imu) {
+        fn_proc_imu(pkt);
+      }
     }
 
 #ifdef CHECK_MSGDROP

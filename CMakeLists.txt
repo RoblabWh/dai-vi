@@ -31,7 +31,7 @@ target_include_directories(dai_vi
 )
 target_link_libraries(dai_vi PUBLIC depthai::core spdlog::spdlog_header_only)
 set_target_properties(dai_vi PROPERTIES
-  CXX_STANDARD 17
+  CXX_STANDARD 20
   CXX_STANDARD_REQUIRED YES
   POSITION_INDEPENDENT_CODE ON
 )

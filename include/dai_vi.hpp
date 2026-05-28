@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -15,13 +16,14 @@ namespace dai_vi {
 enum SyncType { SOFTWARE, CAMERA, BOARD };
 
 struct CameraConfig;
+const uint32_t JPEG_LOSSLESS = -1;
+
+using CamCallback = std::function<void(std::shared_ptr<dai::ImgFrame>, const std::string &)>;
+using IMUCallback = std::function<void(const dai::IMUPacket &)>;
 
 class SensorWrapper {
 public:
-  SensorWrapper(const std::optional<std::string> &device_id = std::nullopt,
-                dai::LogLevel dai_log_level = dai::LogLevel::WARN);
-  SensorWrapper(dai::LogLevel dai_log_level)
-      : SensorWrapper(std::nullopt, dai_log_level) {};
+  SensorWrapper(const std::optional<std::string> &device_id = std::nullopt);
   SensorWrapper(const SensorWrapper &) = delete;
   SensorWrapper &operator=(const SensorWrapper &) = delete;
   ~SensorWrapper();
@@ -33,16 +35,18 @@ public:
       std::optional<float> hz = std::nullopt,
       std::optional<std::chrono::microseconds> exposure = std::nullopt,
       std::optional<uint32_t> iso = std::nullopt,
-      bool color = true, bool encode = false);
+      bool color = true, std::optional<uint32_t> encode = std::nullopt);
   bool addCamera(
       dai::CameraBoardSocket socket,
       std::optional<std::pair<uint32_t, uint32_t>> resolution = std::nullopt,
       std::optional<float> hz = std::nullopt,
       std::optional<std::chrono::microseconds> exposure = std::nullopt,
       std::optional<uint32_t> iso = std::nullopt,
-      bool color = true, bool encode = false);
+      bool color = true, std::optional<uint32_t> encode = std::nullopt);
   bool addIMU(std::vector<dai::IMUSensor> sensors, uint32_t hz);
   bool addIMU(uint32_t hz);
+  void resetCamCallback(CamCallback callback = nullptr);
+  void resetIMUCallback(IMUCallback callback = nullptr);
   bool buildPipeline();
 
   // Pipeline control
@@ -57,16 +61,14 @@ public:
   std::shared_ptr<dai::node::Sync> node_sync;
   std::shared_ptr<dai::node::Script> node_fsync;
   std::unordered_map<std::string, std::shared_ptr<dai::MessageQueue>> queue_cam;
+  std::shared_ptr<dai::MessageQueue> queue_sync;
 
   std::shared_ptr<dai::node::IMU> node_imu;
   std::shared_ptr<dai::MessageQueue> queue_imu;
 
-  std::function<void(std::shared_ptr<dai::ImgFrame>, const std::string &)> fn_proc_cam;
-  std::function<void(const dai::IMUPacket &)> fn_proc_imu;
-
   // Configuration
   std::unordered_set<std::string> sync_cams;
-  SyncType sync_type = SyncType::BOARD;
+  SyncType sync_type = SyncType::SOFTWARE;
   dai::ProcessorType sync_proc = dai::ProcessorType::LEON_MSS;
 
 private:
@@ -81,6 +83,10 @@ private:
   std::chrono::duration<double> imu_interval;
   std::chrono::duration<double> sync_interval;
   std::unordered_map<std::string, std::chrono::duration<double>> cam_interval;
+  std::shared_mutex mtx_proc_cam;
+  std::shared_mutex mtx_proc_imu;
+  CamCallback fn_proc_cam;
+  IMUCallback fn_proc_imu;
 
 #ifdef CHECK_MSGDROP
   static constexpr const double interval_threshold = 1.5;

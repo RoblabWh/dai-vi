@@ -7,16 +7,15 @@ std::ofstream imu_file;
 std::map<std::string, std::ofstream> cam_meta_files;
 std::filesystem::path img_folder;
 
-void write_jpeg_with_exposure(std::shared_ptr<dai::ImgFrame> msg, const std::string &name)
+void write_jpeg_with_exposure(std::shared_ptr<dai::ImgFrame> img, const std::string &name)
 {
-  const auto timestamp = msg->getTimestamp().time_since_epoch().count();
+  const auto timestamp = img->getTimestamp().time_since_epoch().count();
   const auto filename = std::to_string(timestamp) + ".jpg";
-  const auto img = std::dynamic_pointer_cast<dai::EncodedFrame>(msg);
   const auto exposure = std::chrono::duration_cast<std::chrono::nanoseconds>(img->getExposureTime()).count();
+  const auto &data = img->getData();
 
   std::ofstream file(img_folder / name / filename, std::ios::binary);
-  const auto &vec = img->getData();
-  file.write(reinterpret_cast<const char *>(vec.data()), vec.size());
+  file.write(reinterpret_cast<const char *>(data.data()), data.size());
 
   cam_meta_files[name] << timestamp << ',' << exposure << ',' << filename << '\n';
 }
@@ -33,11 +32,10 @@ void write_imu_csv(const dai::IMUPacket &pkt)
 
 bool setup_output_folder(const std::unique_ptr<dai_vi::SensorWrapper> &sensor, const std::string &path, bool force = false)
 {
-  auto logger = spdlog::get("dai_vi");
   std::filesystem::path out_folder(path);
   if (!std::filesystem::is_directory(out_folder.parent_path()))
   {
-    logger->error("Directory \"{}\" does not exist.", out_folder.parent_path().string());
+    spdlog::error("Directory \"{}\" does not exist.", out_folder.parent_path().string());
     return false;
   }
   if (std::filesystem::exists(out_folder))
@@ -48,13 +46,13 @@ bool setup_output_folder(const std::unique_ptr<dai_vi::SensorWrapper> &sensor, c
     }
     else
     {
-      logger->error("Directory \"{}\" exists and -f is not specified.", out_folder.string());
+      spdlog::error("Directory \"{}\" exists and -f is not specified.", out_folder.string());
       return false;
     }
   }
   if (!std::filesystem::create_directory(out_folder))
   {
-    logger->error("Unable to create output directory \"{}\"", out_folder.string());
+    spdlog::error("Unable to create output directory \"{}\"", out_folder.string());
     return false;
   }
   img_folder = out_folder / "cams";
@@ -63,7 +61,7 @@ bool setup_output_folder(const std::unique_ptr<dai_vi::SensorWrapper> &sensor, c
     const auto &path = img_folder / name;
     if (!std::filesystem::create_directories(path))
     {
-      logger->error("Unable to create directory \"{}\"", path.string());
+      spdlog::error("Unable to create directory \"{}\"", path.string());
       return false;
     }
     auto [iter, _] = cam_meta_files.emplace(name, img_folder / (name + ".csv"));
