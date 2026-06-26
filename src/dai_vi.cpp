@@ -28,7 +28,7 @@ struct CameraConfig {
   std::optional<std::chrono::microseconds> exposure;
   std::optional<uint32_t> iso;
   bool color;
-  std::optional<uint32_t> encode;
+  std::optional<int32_t> encode;
 };
 
 static dai::LogLevel log_level_from_env() {
@@ -119,7 +119,7 @@ bool SensorWrapper::addCamera(
     const std::string &name, dai::CameraBoardSocket socket,
     std::optional<std::pair<uint32_t, uint32_t>> resolution,
     std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
-    std::optional<uint32_t> iso, bool color, std::optional<uint32_t> encode) {
+    std::optional<uint32_t> iso, bool color, std::optional<int32_t> encode) {
   spdlog::trace("addCamera: START");
   const bool is_new = cams.find(name) == cams.end();
   if (is_new) {
@@ -132,7 +132,7 @@ bool SensorWrapper::addCamera(
     dai::CameraBoardSocket socket,
     std::optional<std::pair<uint32_t, uint32_t>> resolution,
     std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
-    std::optional<uint32_t> iso, bool color, std::optional<uint32_t> encode) {
+    std::optional<uint32_t> iso, bool color, std::optional<int32_t> encode) {
   return addCamera(dai::toString(socket), socket, resolution, hz, exposure, iso,
                    color, encode);
 }

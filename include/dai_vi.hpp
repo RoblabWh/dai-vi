@@ -16,7 +16,7 @@ namespace dai_vi {
 enum SyncType { SOFTWARE, CAMERA, BOARD };
 
 struct CameraConfig;
-const uint32_t JPEG_LOSSLESS = -1;
+const int32_t JPEG_LOSSLESS = -1;
 
 using CamCallback = std::function<void(std::shared_ptr<dai::ImgFrame>, const std::string &)>;
 using IMUCallback = std::function<void(const dai::IMUPacket &)>;
@@ -35,14 +35,14 @@ public:
       std::optional<float> hz = std::nullopt,
       std::optional<std::chrono::microseconds> exposure = std::nullopt,
       std::optional<uint32_t> iso = std::nullopt,
-      bool color = true, std::optional<uint32_t> encode = std::nullopt);
+      bool color = true, std::optional<int32_t> encode = std::nullopt);
   bool addCamera(
       dai::CameraBoardSocket socket,
       std::optional<std::pair<uint32_t, uint32_t>> resolution = std::nullopt,
       std::optional<float> hz = std::nullopt,
       std::optional<std::chrono::microseconds> exposure = std::nullopt,
       std::optional<uint32_t> iso = std::nullopt,
-      bool color = true, std::optional<uint32_t> encode = std::nullopt);
+      bool color = true, std::optional<int32_t> encode = std::nullopt);
   bool addIMU(std::vector<dai::IMUSensor> sensors, uint32_t hz);
   bool addIMU(uint32_t hz);
   void resetCamCallback(CamCallback callback = nullptr);
