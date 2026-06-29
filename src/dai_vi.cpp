@@ -245,7 +245,9 @@ bool SensorWrapper::buildPipeline() {
           spdlog::error("All synced cameras must have the same Hz! Camera {} has {}Hz while {}Hz was expected", name, cam_hz, sync_hz);
           return false;
         }
-        node->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::INPUT);
+        if (sync_type != SyncType::SOFTWARE) {
+          node->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::INPUT);
+        }
         node_output->link(node_sync->inputs[name]);
       } else {
         queue_cam[name] = node_output->createOutputQueue(0, false);
@@ -267,7 +269,8 @@ bool SensorWrapper::buildPipeline() {
 #endif
       node_sync->setSyncThreshold(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::duration<double>(0.5 / sync_hz)));
+              std::chrono::duration<double>((1.0 - 1.0 / sync_cams.size()) /
+                                            sync_hz)));
 
       queue_sync = node_sync->out.createOutputQueue(0, false);
       queue_sync->addCallback([this](std::shared_ptr<dai::ADatatype> data) {
