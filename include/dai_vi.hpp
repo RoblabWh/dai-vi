@@ -70,6 +70,7 @@ public:
   std::unordered_set<std::string> sync_cams;
   SyncType sync_type = SyncType::SOFTWARE;
   dai::ProcessorType sync_proc = dai::ProcessorType::LEON_MSS;
+  bool sync_host = false;
 
 private:
   void proc_synced(std::shared_ptr<dai::MessageGroup> msgpack);

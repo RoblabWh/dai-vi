@@ -267,6 +267,7 @@ bool SensorWrapper::buildPipeline() {
 #ifdef CHECK_MSGDROP
       sync_interval_limit = std::chrono::duration_cast<std::chrono::nanoseconds>(sync_interval * interval_threshold);
 #endif
+      node_sync->setRunOnHost(sync_host);
       node_sync->setSyncThreshold(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::duration<double>((1.0 - 1.0 / sync_cams.size()) /
