@@ -364,24 +364,26 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
 void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::string &name) {
   // spdlog::trace("proc_cam: START");
 #ifdef CHECK_MSGDROP
-  const auto tp = msg->getTimestampDevice();
-  const auto time_diff = tp - last_cam_tp[name];
-  last_cam_tp[name] = tp;
-  const auto interval = cam_interval[name];
-  if (time_diff > cam_interval_limit[name]) {
-    const auto time_delay = time_diff - interval;
-    spdlog::warn(
-        "[{}] {} Frames Dropped!! (by {:.3f}ms)", name,
-        std::round(time_delay / interval),
-        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff - interval).count());
-  }
+  if (std::find(sync_cams.begin(), sync_cams.end(), name) == sync_cams.end()) {
+    const auto tp = msg->getTimestampDevice();
+    const auto time_diff = tp - last_cam_tp[name];
+    last_cam_tp[name] = tp;
+    const auto interval = cam_interval[name];
+    if (time_diff > cam_interval_limit[name]) {
+      const auto time_delay = time_diff - interval;
+      spdlog::warn(
+          "[{}] {} Frames Dropped!! (by {:.3f}ms)", name,
+          std::round(time_delay / interval),
+          std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff - interval).count());
+    }
 #ifdef TRACE_MSGS
-  else {
-    spdlog::trace(
-        "[{}] Frame received with delay: {:.3f} ms", name,
-        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count());
-  }
+    else {
+      spdlog::trace(
+          "[{}] Frame received with delay: {:.3f} ms", name,
+          std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count());
+    }
 #endif
+  }
 #endif
 
   {
