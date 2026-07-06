@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -187,8 +186,9 @@ bool SensorWrapper::buildPipeline() {
   }
 
   if (!cams.empty()) {
-    if (!fn_proc_cam)
+    if (!fn_proc_cam) {
       spdlog::warn("Cameras are enabled without callback to process the data!");
+    }
 
     if (!sync_cams.empty()) {
       node_sync = pipeline->create<dai::node::Sync>();
@@ -263,6 +263,7 @@ bool SensorWrapper::buildPipeline() {
     }
 
     if (!sync_cams.empty()) {
+      sync_tasks.reserve(sync_cams.size());
       sync_interval = std::chrono::duration<double>(1.0 / sync_hz);
 #ifdef CHECK_MSGDROP
       sync_interval_limit = std::chrono::duration_cast<std::chrono::nanoseconds>(sync_interval * interval_threshold);
@@ -319,6 +320,8 @@ void SensorWrapper::start() {
 void SensorWrapper::stop() {
   spdlog::trace("stop: START");
   pipeline->stop();
+  pipeline->wait();
+  sync_tasks.clear();
   spdlog::trace("stop: END");
 }
 
@@ -348,17 +351,13 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
 #endif
 #endif
 
-  std::queue<std::future<void>> futures;
+  // Wait for the previous callbacks and dispatch new ones
+  sync_tasks.clear();
   for (const auto &[name, msg] : *msgpack) {
-    futures.push(std::async(std::launch::async, [this, msg, name]() {
+    sync_tasks.emplace_back(std::async(std::launch::async, [this, name, msg]() {
       proc_cam(std::dynamic_pointer_cast<dai::ImgFrame>(msg), name);
     }));
   }
-  while (!futures.empty()) {
-    futures.front().wait();
-    futures.pop();
-  }
-
   // spdlog::trace("proc_synced: END");
 }
 
@@ -390,7 +389,11 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
   {
     std::shared_lock<std::shared_mutex> lock(mtx_proc_cam);
     if (fn_proc_cam) {
-      fn_proc_cam(msg, name);
+      try {
+        fn_proc_cam(msg, name);
+      } catch (const std::exception &e) {
+        spdlog::error("[{}] Camera callback threw: {}", name, e.what());
+      }
     }
   }
 
@@ -408,7 +411,11 @@ void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
     {
       std::shared_lock<std::shared_mutex> lock(mtx_proc_imu);
       if (fn_proc_imu) {
-        fn_proc_imu(pkt);
+        try {
+          fn_proc_imu(pkt);
+        } catch (const std::exception &e) {
+          spdlog::error("IMU callback threw: {}", e.what());
+        }
       }
     }
 

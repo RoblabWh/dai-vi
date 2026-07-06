@@ -3,6 +3,7 @@
 #include "depthai/depthai.hpp"
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
@@ -88,6 +89,7 @@ private:
   std::shared_mutex mtx_proc_imu;
   CamCallback fn_proc_cam;
   IMUCallback fn_proc_imu;
+  std::vector<std::future<void>> sync_tasks;
 
 #ifdef CHECK_MSGDROP
   static constexpr const double interval_threshold = 1.5;
