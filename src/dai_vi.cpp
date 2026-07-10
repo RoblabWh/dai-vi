@@ -353,10 +353,16 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
 
   // Wait for the previous callbacks and dispatch new ones
   sync_tasks.clear();
+  const auto stamp = msgpack->getTimestamp();
   for (const auto &[name, msg] : *msgpack) {
-    sync_tasks.emplace_back(std::async(std::launch::async, [this, name, msg]() {
-      proc_cam(std::dynamic_pointer_cast<dai::ImgFrame>(msg), name);
-    }));
+    auto img = std::dynamic_pointer_cast<dai::ImgFrame>(msg);
+    if (sync_stamps) {
+      img->setTimestamp(stamp);
+    }
+    sync_tasks.emplace_back(
+        std::async(std::launch::async, [this, name, img = std::move(img)]() {
+          proc_cam(std::move(img), name);
+        }));
   }
   // spdlog::trace("proc_synced: END");
 }
@@ -390,7 +396,7 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
     std::shared_lock<std::shared_mutex> lock(mtx_proc_cam);
     if (fn_proc_cam) {
       try {
-        fn_proc_cam(msg, name);
+        fn_proc_cam(std::move(msg), name);
       } catch (const std::exception &e) {
         spdlog::error("[{}] Camera callback threw: {}", name, e.what());
       }

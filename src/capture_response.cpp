@@ -94,6 +94,7 @@ int main(int argc, char **argv) {
                       std::nullopt, false, dai_vi::JPEG_LOSSLESS);
     sensor->sync_cams.insert(name);
   }
+  sensor->sync_stamps = true;
   sensor->sync_type = sync_type == "board"    ? dai_vi::SyncType::BOARD
                       : sync_type == "camera" ? dai_vi::SyncType::CAMERA
                                               : dai_vi::SyncType::SOFTWARE;
