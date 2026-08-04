@@ -14,7 +14,7 @@
 #include <vector>
 
 namespace dai_vi {
-enum SyncType { SOFTWARE, CAMERA, BOARD };
+enum SyncType { SOFTWARE, CAMERA, BOARD, EXTERNAL };
 
 struct CameraConfig;
 const int32_t JPEG_LOSSLESS = -1;
