@@ -36,14 +36,16 @@ public:
       std::optional<float> hz = std::nullopt,
       std::optional<std::chrono::microseconds> exposure = std::nullopt,
       std::optional<uint32_t> iso = std::nullopt,
-      bool color = true, std::optional<int32_t> encode = std::nullopt);
+      bool color = true, std::optional<int32_t> encode = std::nullopt,
+      uint32_t warmup = 0);
   bool addCamera(
       dai::CameraBoardSocket socket,
       std::optional<std::pair<uint32_t, uint32_t>> resolution = std::nullopt,
       std::optional<float> hz = std::nullopt,
       std::optional<std::chrono::microseconds> exposure = std::nullopt,
       std::optional<uint32_t> iso = std::nullopt,
-      bool color = true, std::optional<int32_t> encode = std::nullopt);
+      bool color = true, std::optional<int32_t> encode = std::nullopt,
+      uint32_t warmup = 0);
   bool addIMU(std::vector<dai::IMUSensor> sensors, uint32_t hz);
   bool addIMU(uint32_t hz);
   void resetCamCallback(CamCallback callback = nullptr);
@@ -86,6 +88,8 @@ private:
   std::chrono::duration<double> imu_interval;
   std::chrono::duration<double> sync_interval;
   std::unordered_map<std::string, std::chrono::duration<double>> cam_interval;
+  std::unordered_map<std::string, int32_t> cam_warmup;
+  int32_t sync_warmup = -1;
   std::shared_mutex mtx_proc_cam;
   std::shared_mutex mtx_proc_imu;
   CamCallback fn_proc_cam;

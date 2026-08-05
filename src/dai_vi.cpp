@@ -118,11 +118,13 @@ bool SensorWrapper::addCamera(
     const std::string &name, dai::CameraBoardSocket socket,
     std::optional<std::pair<uint32_t, uint32_t>> resolution,
     std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
-    std::optional<uint32_t> iso, bool color, std::optional<int32_t> encode) {
+    std::optional<uint32_t> iso, bool color, std::optional<int32_t> encode,
+    uint32_t warmup) {
   spdlog::trace("addCamera: START");
   const bool is_new = cams.find(name) == cams.end();
   if (is_new) {
     cams[name] = {socket, resolution, hz, exposure, iso, color, encode};
+    cam_warmup[name] = warmup;
   }
   spdlog::trace("addCamera: END");
   return is_new;
@@ -131,9 +133,10 @@ bool SensorWrapper::addCamera(
     dai::CameraBoardSocket socket,
     std::optional<std::pair<uint32_t, uint32_t>> resolution,
     std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
-    std::optional<uint32_t> iso, bool color, std::optional<int32_t> encode) {
+    std::optional<uint32_t> iso, bool color, std::optional<int32_t> encode,
+    uint32_t warmup) {
   return addCamera(dai::toString(socket), socket, resolution, hz, exposure, iso,
-                   color, encode);
+                   color, encode, warmup);
 }
 
 bool SensorWrapper::addIMU(std::vector<dai::IMUSensor> sensors, uint32_t hz) {
@@ -245,6 +248,12 @@ bool SensorWrapper::buildPipeline() {
           spdlog::error("All synced cameras must have the same Hz! Camera {} has {}Hz while {}Hz was expected", name, cam_hz, sync_hz);
           return false;
         }
+        if (sync_warmup < 0) {
+          sync_warmup = cam_warmup[name];
+        } else if (sync_warmup != cam_warmup[name]) {
+          spdlog::error("All synced cameras must have the same warmup! Has {} while {} was expected", name, cam_warmup[name], sync_warmup);
+          return false;
+        }
         if (sync_type != SyncType::SOFTWARE) {
           node->initialControl.setFrameSyncMode(dai::CameraControl::FrameSyncMode::INPUT);
         }
@@ -328,6 +337,14 @@ void SensorWrapper::stop() {
 void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
   // spdlog::trace("proc_synced: START");
 
+  if (sync_warmup > 0) {
+    sync_warmup--;
+    return;
+  } else if (sync_warmup == 0) {
+    sync_warmup--;
+    spdlog::info("Synced cameras started");
+  }
+
 #ifdef CHECK_MSGDROP
   static auto last_tp = msgpack->getTimestampDevice();
   const auto tp = msgpack->getTimestampDevice();
@@ -369,8 +386,17 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
 
 void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::string &name) {
   // spdlog::trace("proc_cam: START");
-#ifdef CHECK_MSGDROP
   if (std::find(sync_cams.begin(), sync_cams.end(), name) == sync_cams.end()) {
+    auto &warmup = cam_warmup[name];
+    if (warmup > 0) {
+      warmup--;
+      return;
+    } else if (warmup == 0) {
+      warmup--;
+      spdlog::info("[{}] Started", name);
+    }
+
+#ifdef CHECK_MSGDROP
     const auto tp = msg->getTimestampDevice();
     const auto time_diff = tp - last_cam_tp[name];
     last_cam_tp[name] = tp;
@@ -389,8 +415,8 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
           std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count());
     }
 #endif
-  }
 #endif
+  }
 
   {
     std::shared_lock<std::shared_mutex> lock(mtx_proc_cam);
