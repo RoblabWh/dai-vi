@@ -69,7 +69,6 @@ static std::optional<int> detect_board_revision(const std::unique_ptr<dai::Devic
 
 SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id) {
   spdlog::cfg::load_env_levels();
-  spdlog::trace("Constructor: START");
   const auto device_log_level = log_level_from_env();
 
   // Detect board and revision
@@ -104,14 +103,10 @@ SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id) {
   }
   pipeline = std::make_unique<dai::Pipeline>(std::make_shared<dai::Device>(dev_cfg, dev_info));
   pipeline->setXLinkChunkSize(0);
-
-  spdlog::trace("Constructor: END");
 }
 
 SensorWrapper::~SensorWrapper() {
-  spdlog::trace("Destructor: START");
   stop();
-  spdlog::trace("Destructor: END");
 }
 
 bool SensorWrapper::addCamera(
@@ -120,13 +115,11 @@ bool SensorWrapper::addCamera(
     std::optional<float> hz, std::optional<std::chrono::microseconds> exposure,
     std::optional<uint32_t> iso, bool color, std::optional<int32_t> encode,
     uint32_t warmup) {
-  spdlog::trace("addCamera: START");
   const bool is_new = cams.find(name) == cams.end();
   if (is_new) {
     cams[name] = {socket, resolution, hz, exposure, iso, color, encode};
     cam_warmup[name] = warmup;
   }
-  spdlog::trace("addCamera: END");
   return is_new;
 }
 bool SensorWrapper::addCamera(
@@ -140,13 +133,11 @@ bool SensorWrapper::addCamera(
 }
 
 bool SensorWrapper::addIMU(std::vector<dai::IMUSensor> sensors, uint32_t hz) {
-  spdlog::trace("addIMU: START");
   const bool is_new = imu_sensors.empty();
   if (is_new) {
     imu_sensors = std::move(sensors);
     imu_hz = hz;
   }
-  spdlog::trace("addIMU: END");
   return is_new;
 }
 bool SensorWrapper::addIMU(uint32_t hz) {
@@ -165,8 +156,6 @@ void SensorWrapper::resetIMUCallback(IMUCallback callback) {
 }
 
 bool SensorWrapper::buildPipeline() {
-  spdlog::trace("buildPipeline: START");
-
   if (!imu_sensors.empty()) {
     node_imu = pipeline->create<dai::node::IMU>();
     node_imu->enableIMUSensor(imu_sensors, imu_hz);
@@ -179,7 +168,7 @@ bool SensorWrapper::buildPipeline() {
     });
 
     if (!fn_proc_imu)
-      spdlog::warn("IMU is enabled without callback to process the data!");
+      spdlog::warn("[imu] Enabled without callback to process the data!");
 
     imu_interval = std::chrono::duration<double>(1.0 / imu_hz);
 #ifdef CHECK_MSGDROP
@@ -316,33 +305,26 @@ bool SensorWrapper::buildPipeline() {
     }
   }
 
-  spdlog::trace("buildPipeline: END");
   return true;
 }
 
 void SensorWrapper::start() {
-  spdlog::trace("start: START");
   pipeline->start();
-  spdlog::trace("start: END");
 }
 
 void SensorWrapper::stop() {
-  spdlog::trace("stop: START");
   pipeline->stop();
   pipeline->wait();
   sync_tasks.clear();
-  spdlog::trace("stop: END");
 }
 
 void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
-  // spdlog::trace("proc_synced: START");
-
   if (sync_warmup > 0) {
     sync_warmup--;
     return;
   } else if (sync_warmup == 0) {
     sync_warmup--;
-    spdlog::info("Synced cameras started");
+    spdlog::info("[sync] Image processing started");
   }
 
 #ifdef CHECK_MSGDROP
@@ -353,14 +335,14 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
   if (time_diff > sync_interval_limit) {
     const auto time_delay = time_diff - sync_interval;
     spdlog::warn(
-        "{} Synced Messages Dropped!! (by {:.3f}ms)",
+        "[sync] {} Messages Dropped!! (by {:.3f}ms)",
         std::round(time_delay / sync_interval),
         std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_delay).count());
   }
 #ifdef TRACE_MSGS
   else {
     spdlog::trace(
-        "Synced frames received with delay: {:.3f} ms in interval: {:.3f} us",
+        "[sync] Frames received with delay: {:.3f} ms in interval: {:.3f} us",
         std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count(),
         std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
           std::chrono::nanoseconds(msgpack->getIntervalNs())).count());
@@ -381,11 +363,9 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
           proc_cam(std::move(img), name);
         }));
   }
-  // spdlog::trace("proc_synced: END");
 }
 
 void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::string &name) {
-  // spdlog::trace("proc_cam: START");
   if (std::find(sync_cams.begin(), sync_cams.end(), name) == sync_cams.end()) {
     auto &warmup = cam_warmup[name];
     if (warmup > 0) {
@@ -393,7 +373,7 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
       return;
     } else if (warmup == 0) {
       warmup--;
-      spdlog::info("[{}] Started", name);
+      spdlog::info("[{}] Image processing started", name);
     }
 
 #ifdef CHECK_MSGDROP
@@ -406,7 +386,7 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
       spdlog::warn(
           "[{}] {} Frames Dropped!! (by {:.3f}ms)", name,
           std::round(time_delay / interval),
-          std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff - interval).count());
+          std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_delay).count());
     }
 #ifdef TRACE_MSGS
     else {
@@ -424,16 +404,13 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
       try {
         fn_proc_cam(std::move(msg), name);
       } catch (const std::exception &e) {
-        spdlog::error("[{}] Camera callback threw: {}", name, e.what());
+        spdlog::error("[{}] Callback threw: {}", name, e.what());
       }
     }
   }
-
-  // spdlog::trace("proc_cam: END");
 }
 
 void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
-  // spdlog::trace("proc_imu: START");
 #ifdef CHECK_MSGDROP
   static auto last_tp = msg->packets.front().gyroscope.getTimestampDevice();
 #endif
@@ -446,7 +423,7 @@ void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
         try {
           fn_proc_imu(pkt);
         } catch (const std::exception &e) {
-          spdlog::error("IMU callback threw: {}", e.what());
+          spdlog::error("[imu] Callback threw: {}", e.what());
         }
       }
     }
@@ -458,20 +435,19 @@ void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
     if (time_diff > imu_interval_limit) {
       const auto time_delay = time_diff - imu_interval;
       spdlog::warn(
-          "{} IMU Messages Dropped!! (by {:.3f}ms)",
+          "[imu] {} Messages Dropped!! (by {:.3f}ms)",
           std::round(time_delay / imu_interval),
-          std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff - imu_interval).count());
+          std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_delay).count());
     }
 #ifdef TRACE_MSGS
     else {
       spdlog::trace(
-          "IMU packets received with delay: {:.3f} ms",
+          "[imu] Packets received with delay: {:.3f} ms",
           std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_diff).count());
     }
 #endif
 #endif
   }
-  // spdlog::trace("proc_imu: END");
 }
 
 } // namespace dai_vi
