@@ -24,7 +24,7 @@ using IMUCallback = std::function<void(const dai::IMUPacket &)>;
 
 class SensorWrapper {
 public:
-  SensorWrapper(const std::optional<std::string> &device_id = std::nullopt);
+  SensorWrapper(const std::optional<std::string> &device_id = std::nullopt, const dai::UsbSpeed &usb_speed = dai::UsbSpeed::SUPER_PLUS);
   SensorWrapper(const SensorWrapper &) = delete;
   SensorWrapper &operator=(const SensorWrapper &) = delete;
   ~SensorWrapper();

@@ -67,7 +67,7 @@ static std::optional<int> detect_board_revision(const std::unique_ptr<dai::Devic
   }
 }
 
-SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id) {
+SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id, const dai::UsbSpeed &usb_speed) {
   spdlog::cfg::load_env_levels();
   const auto device_log_level = log_level_from_env();
 
@@ -101,7 +101,7 @@ SensorWrapper::SensorWrapper(const std::optional<std::string> &device_id) {
     const auto fsin_mode_select = *board_revision < 6 ? 6 : 38;
     dev_cfg.board.gpio[fsin_mode_select] = dai::BoardConfig::GPIO(dai::BoardConfig::GPIO::OUTPUT, dai::BoardConfig::GPIO::Level::HIGH);
   }
-  pipeline = std::make_unique<dai::Pipeline>(std::make_shared<dai::Device>(dev_cfg, dev_info));
+  pipeline = std::make_unique<dai::Pipeline>(std::make_shared<dai::Device>(dev_cfg, dev_info, usb_speed));
   pipeline->setXLinkChunkSize(0);
 }
 
