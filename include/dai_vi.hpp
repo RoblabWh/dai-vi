@@ -102,6 +102,9 @@ private:
   std::chrono::nanoseconds imu_interval_limit;
   std::chrono::nanoseconds sync_interval_limit;
   std::unordered_map<std::string, std::chrono::nanoseconds> cam_interval_limit;
+
+  std::chrono::steady_clock::time_point last_imu_tp = std::chrono::steady_clock::time_point::max();
+  std::chrono::steady_clock::time_point last_sync_tp = std::chrono::steady_clock::time_point::max();
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_cam_tp;
 #endif
 };

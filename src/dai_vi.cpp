@@ -316,6 +316,13 @@ void SensorWrapper::stop() {
   pipeline->stop();
   pipeline->wait();
   sync_tasks.clear();
+#ifdef CHECK_MSGDROP
+  last_imu_tp = std::chrono::steady_clock::time_point::max();
+  last_sync_tp = std::chrono::steady_clock::time_point::max();
+  for (auto &[name, tp] : last_cam_tp) {
+    tp = std::chrono::steady_clock::time_point::max();
+  }
+#endif
 }
 
 void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
@@ -328,10 +335,9 @@ void SensorWrapper::proc_synced(std::shared_ptr<dai::MessageGroup> msgpack) {
   }
 
 #ifdef CHECK_MSGDROP
-  static auto last_tp = msgpack->getTimestampDevice();
   const auto tp = msgpack->getTimestampDevice();
-  const auto time_diff = tp - last_tp;
-  last_tp = tp;
+  const auto time_diff = tp - last_sync_tp;
+  last_sync_tp = tp;
   if (time_diff > sync_interval_limit) {
     const auto time_delay = time_diff - sync_interval;
     spdlog::warn(
@@ -411,10 +417,6 @@ void SensorWrapper::proc_cam(std::shared_ptr<dai::ImgFrame> msg, const std::stri
 }
 
 void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
-#ifdef CHECK_MSGDROP
-  static auto last_tp = msg->packets.front().gyroscope.getTimestampDevice();
-#endif
-
   // Old implementation for normal IMU Data
   for (const auto &pkt : msg->packets) {
     {
@@ -430,8 +432,8 @@ void SensorWrapper::proc_imu(std::shared_ptr<dai::IMUData> msg) {
 
 #ifdef CHECK_MSGDROP
     const auto tp = pkt.gyroscope.getTimestampDevice();
-    const auto time_diff = tp - last_tp;
-    last_tp = tp;
+    const auto time_diff = tp - last_imu_tp;
+    last_imu_tp = tp;
     if (time_diff > imu_interval_limit) {
       const auto time_delay = time_diff - imu_interval;
       spdlog::warn(
